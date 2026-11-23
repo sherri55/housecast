@@ -56,10 +56,11 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
   ValueData: """{app}\Housecast.exe"""; Tasks: startup; Flags: uninsdeletevalue
 
 [Run]
-; Speakers answer the app's PTP clock and ask it for missed audio over UDP; this lets those
-; replies in on home (private) networks without a firewall prompt
+; Speakers answer the app's PTP clock and ask it for missed audio over UDP, and iPhones and
+; Macs reach its groups over TCP on ports Windows picks; this lets both in on home (private)
+; networks without a firewall prompt
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Housecast"""; Flags: runhidden
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Housecast"" dir=in action=allow protocol=UDP profile=private,domain program=""{app}\Housecast.exe"" enable=yes"; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Housecast"" dir=in action=allow protocol=any profile=private,domain program=""{app}\Housecast.exe"" enable=yes"; Flags: runhidden
 Filename: "{app}\Housecast.exe"; Description: "Start Housecast"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
