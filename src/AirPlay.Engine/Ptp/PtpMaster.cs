@@ -53,9 +53,11 @@ public sealed class PtpMaster : IAsyncDisposable
 
     public void Start()
     {
-        _loops.Add(SendLoopAsync(_stop.Token));
-        _loops.Add(ReceiveLoopAsync(_event, _stop.Token));
-        _loops.Add(ReceiveLoopAsync(_general, _stop.Token));
+        // On the thread pool, never an app's UI thread: a Sync sent late or a Delay_Req
+        // timestamped late skews every speaker's idea of our clock
+        _loops.Add(Task.Run(() => SendLoopAsync(_stop.Token)));
+        _loops.Add(Task.Run(() => ReceiveLoopAsync(_event, _stop.Token)));
+        _loops.Add(Task.Run(() => ReceiveLoopAsync(_general, _stop.Token)));
     }
 
     /// <summary>

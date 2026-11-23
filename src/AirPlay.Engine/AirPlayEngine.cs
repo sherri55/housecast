@@ -52,8 +52,10 @@ public sealed class AirPlayEngine : IAsyncDisposable
         _keyStore = keyStore;
         _streamer = new AirPlayStreamer(Convert.ToUInt64(keyStore.ClientId, 16), clientName);
         _pacer = new PcmPacer(frame => _streamer.Send(frame));
-        _pumpLoop = PumpAsync(_stop.Token);
-        _discoveryLoop = DiscoverAsync(_stop.Token);
+        // On the thread pool: started from an app's UI thread, the loops would otherwise resume
+        // there, and any pause in the UI (such as pairing a speaker) would delay the audio
+        _pumpLoop = Task.Run(() => PumpAsync(_stop.Token));
+        _discoveryLoop = Task.Run(() => DiscoverAsync(_stop.Token));
     }
 
     /// <summary>The AirPlay 2 speakers on the network, by name.</summary>
@@ -105,7 +107,8 @@ public sealed class AirPlayEngine : IAsyncDisposable
         try
         {
             using var timeout = new CancellationTokenSource(ConnectTimeout);
-            var session = await _streamer.AddSpeakerAsync(speaker, Scaled(volume), offsetMilliseconds, pairing, _keyStore.ClientId, timeout.Token);
+            // Pairing is seconds of big-number maths at worst; keep it off the caller's (UI) thread
+            var session = await Task.Run(() => _streamer.AddSpeakerAsync(speaker, Scaled(volume), offsetMilliseconds, pairing, _keyStore.ClientId, timeout.Token));
             session.Lost += OnLost;
             lock (_lock)
                 _playing[speakerId] = new Playing(session, volume);
@@ -184,7 +187,7 @@ public sealed class AirPlayEngine : IAsyncDisposable
         {
             try
             {
-                _keyStore.Save(speakerId, await HomeKitPairing.PairWithPinAsync(rtsp, pin, _keyStore.ClientId));
+                _keyStore.Save(speakerId, await Task.Run(() => HomeKitPairing.PairWithPinAsync(rtsp, pin, _keyStore.ClientId)));
                 return true;
             }
             catch (Exception ex) when (ex is PairingException or IOException or SocketException)

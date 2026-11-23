@@ -50,7 +50,7 @@ public sealed class AirPlayStreamer : IAsyncDisposable
         _clientId = clientId;
         _clientName = clientName;
         _ptp.Start();
-        _resendLoop = ResendLoopAsync(_stop.Token);
+        _resendLoop = Task.Run(() => ResendLoopAsync(_stop.Token));
     }
 
     private sealed class Target(AirPlaySession session, int offsetSamples)

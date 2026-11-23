@@ -29,7 +29,7 @@ internal sealed class EventsChannel : IAsyncDisposable
         var writeKey = Derive(sharedSecret, "Events-Read-Encryption-Key");
         var readKey = Derive(sharedSecret, "Events-Write-Encryption-Key");
         var stream = new EncryptedChannelStream(_tcp.GetStream(), writeKey, readKey);
-        _loop = AnswerAsync(stream, _stop.Token);
+        _loop = Task.Run(() => AnswerAsync(stream, _stop.Token));
     }
 
     private static async Task AnswerAsync(Stream stream, CancellationToken cancellationToken)
