@@ -1,0 +1,7 @@
+bin/
+obj/
+*.user
+.vs/
+
+# Local notes on the project's conventions, kept out of the repository
+PROJECT.md

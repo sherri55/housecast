@@ -1,0 +1,91 @@
+diff --git a/src/outputs/airplay.c b/src/outputs/airplay.c
+index 92ad8ad..a331c3c 100644
+--- a/src/outputs/airplay.c
++++ b/src/outputs/airplay.c
+@@ -258,6 +258,7 @@ struct airplay_session
+   bool req_has_auth;
+   bool supports_auth_setup;
+   bool supports_encryption;
++  bool pin_pending;
+ 
+   struct event *deferredev;
+ 
+@@ -1319,7 +1320,9 @@ session_cleanup(struct airplay_session *session)
+ 	s->next = session->next;
+     }
+ 
+-  outputs_device_session_remove(session->device_id);
++  // A session waiting for a PIN is already detached from its device
++  if (!session->pin_pending)
++    outputs_device_session_remove(session->device_id);
+ 
+   session_free(session);
+ }
+@@ -1375,6 +1378,28 @@ session_success(struct airplay_session *session)
+   session_cleanup(session);
+ }
+ 
++// Some receivers (e.g. Samsung TVs) only accept the PIN on the connection that
++// asked them to display it, so the session is kept open for device_authorize
++static void
++session_pin_started(struct airplay_session *session)
++{
++  struct airplay_session *s;
++
++  for (s = airplay_sessions; s; s = s->next)
++    {
++      if (s != session && s->pin_pending && s->device_id == session->device_id)
++	break;
++    }
++
++  if (s)
++    session_cleanup(s);
++
++  session_status(session);
++
++  outputs_device_session_remove(session->device_id);
++  session->pin_pending = true;
++}
++
+ static void
+ session_connected(struct airplay_session *session)
+ {
+@@ -4145,7 +4170,7 @@ static struct airplay_seq_definition airplay_seq_definition[] =
+   { AIRPLAY_SEQ_FLUSH, session_status, session_failure },
+   { AIRPLAY_SEQ_STOP, session_success, session_failure },
+   { AIRPLAY_SEQ_FAILURE, session_success, session_failure},
+-  { AIRPLAY_SEQ_PIN_START, session_success, session_failure },
++  { AIRPLAY_SEQ_PIN_START, session_pin_started, session_failure },
+   { AIRPLAY_SEQ_SEND_VOLUME, session_status, session_failure },
+   { AIRPLAY_SEQ_SEND_TEXT, NULL, session_failure },
+   { AIRPLAY_SEQ_SEND_PROGRESS, NULL, session_failure },
+@@ -4761,10 +4786,25 @@ airplay_device_authorize(struct output_device *device, const char *pin, int call
+ {
+   struct airplay_session *session;
+ 
+-  // Make a session so we can communicate with the device
+-  session = session_make(device, callback_id);
+-  if (!session)
+-    return -1;
++  for (session = airplay_sessions; session; session = session->next)
++    {
++      if (session->pin_pending && session->device_id == device->id)
++	break;
++    }
++
++  if (session)
++    {
++      session->pin_pending = false;
++      session->callback_id = callback_id;
++      outputs_device_session_add(device->id, session);
++    }
++  else
++    {
++      // Make a session so we can communicate with the device
++      session = session_make(device, callback_id);
++      if (!session)
++	return -1;
++    }
+ 
+   sequence_start(AIRPLAY_SEQ_PAIR_SETUP, session, (void *)pin, "device_authorize");
+ 
