@@ -10,7 +10,7 @@ $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'AirPlay Tray.l
 Get-Process AirPlayTray -ErrorAction SilentlyContinue | Stop-Process -Confirm:$false
 Start-Sleep -Seconds 1
 
-dotnet publish "$PSScriptRoot\AirPlayTray.csproj" -c Release -o $installDir --nologo -v q
+dotnet publish "$PSScriptRoot\src\AirPlayTray\AirPlayTray.csproj" -c Release -o $installDir --nologo -v q
 if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 
 $shell = New-Object -ComObject WScript.Shell
