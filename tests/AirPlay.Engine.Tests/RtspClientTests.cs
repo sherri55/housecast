@@ -73,6 +73,20 @@ public class RtspClientTests
         Assert.EndsWith("Content-Length: 15\r\n\r\nvolume: -15.0\r\n", requests[1]);
     }
 
+    [Fact]
+    public async Task Gives_its_local_address_in_plain_IPv4_form()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var accept = listener.AcceptTcpClientAsync();
+
+        await using var client = new RtspClient(1, "Test");
+        await client.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port);
+        using var server = await accept;
+
+        Assert.Equal(IPAddress.Loopback, client.LocalEndPoint!.Address);
+    }
+
     // Reads one request: the header block, then as many body bytes as Content-Length says
     private static async Task<string> ReadRequestAsync(NetworkStream stream)
     {

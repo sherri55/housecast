@@ -15,6 +15,8 @@ public sealed class RtspClient : IAsyncDisposable
     private const string UserAgent = "AirPlay/999.0.0";
 
     private readonly TcpClient _tcp = new() { NoDelay = true };
+    // One request at a time: a keepalive timer and a volume change must not interleave on the wire
+    private readonly SemaphoreSlim _oneAtATime = new(1, 1);
     private Stream _stream = Stream.Null;
     private int _cseq = 1;
 
@@ -35,7 +37,11 @@ public sealed class RtspClient : IAsyncDisposable
     /// </summary>
     public uint ActiveRemote { get; } = (uint)Random.Shared.Next();
 
-    public IPEndPoint? LocalEndPoint => _tcp.Client.LocalEndPoint as IPEndPoint;
+    // TcpClient's socket is dual-mode, so an IPv4 connection reports ::ffff:a.b.c.d; receivers
+    // are given this address for PTP and the session URL and only understand the plain IPv4 form
+    public IPEndPoint? LocalEndPoint => _tcp.Client.LocalEndPoint is IPEndPoint local
+        ? new IPEndPoint(local.Address.IsIPv4MappedToIPv6 ? local.Address.MapToIPv4() : local.Address, local.Port)
+        : null;
 
     public async Task ConnectAsync(IPAddress address, int port, CancellationToken cancellationToken = default)
     {
@@ -55,6 +61,25 @@ public sealed class RtspClient : IAsyncDisposable
         string? contentType = null,
         IReadOnlyDictionary<string, string>? headers = null,
         CancellationToken cancellationToken = default)
+    {
+        await _oneAtATime.WaitAsync(cancellationToken);
+        try
+        {
+            return await SendOneAsync(method, uri, body, contentType, headers, cancellationToken);
+        }
+        finally
+        {
+            _oneAtATime.Release();
+        }
+    }
+
+    private async Task<RtspResponse> SendOneAsync(
+        string method,
+        string uri,
+        byte[]? body,
+        string? contentType,
+        IReadOnlyDictionary<string, string>? headers,
+        CancellationToken cancellationToken)
     {
         var request = new StringBuilder();
         request.Append($"{method} {uri} RTSP/1.0\r\n");

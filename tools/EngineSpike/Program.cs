@@ -3,12 +3,19 @@
 //   EngineSpike [info] ["speaker name"]       list speakers, GET /info, transient pairing, encrypted GET /info
 //   EngineSpike pin "speaker name" pinFile    PIN pairing: the TV shows a PIN; write it to pinFile.
 //                                             Then reconnects with pair-verify and the saved keys.
+//   EngineSpike tone "speaker name"           a 440 Hz tone for 15 s
+//   EngineSpike live "speaker name" [seconds] whatever Windows is playing, for 60 s by default
+using AirPlay.Engine;
+using AirPlay.Engine.Audio;
 using AirPlay.Engine.Discovery;
 using AirPlay.Engine.Pairing;
 using AirPlay.Engine.Rtsp;
 using Claunia.PropertyList;
+using NAudio.CoreAudioApi;
+using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
-var mode = args.Length > 0 && args[0] is "info" or "pin" ? args[0] : "info";
+var mode = args.Length > 0 && args[0] is "info" or "pin" or "tone" or "live" ? args[0] : "info";
 var rest = mode == args.FirstOrDefault() ? args[1..] : args;
 var target = rest.Length > 0 ? rest[0] : "Bedroom 2";
 
@@ -27,7 +34,103 @@ if (speaker is null)
 var keyStore = new KeyStore(Path.Combine(AppContext.BaseDirectory, "spike-pairings.bin"));
 var clientId = Convert.ToUInt64(keyStore.ClientId, 16);
 
-if (mode == "info")
+if (mode == "tone")
+{
+    // A quiet 440 Hz tone for 15 seconds, handed in at the rate it plays
+    await using var streamer = new AirPlayStreamer(clientId, "EngineSpike");
+    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+    await streamer.AddSpeakerAsync(speaker, volumePercent: 25);
+    Console.WriteLine($"\nSession set up with {speaker.Name} in {stopwatch.ElapsedMilliseconds} ms; playing a 440 Hz tone for 15 s");
+
+    var frame = new short[AlacFramer.SamplesPerFrame * 2];
+    long samplesSent = 0;
+    stopwatch.Restart();
+    while (stopwatch.Elapsed < TimeSpan.FromSeconds(15))
+    {
+        var due = (long)(stopwatch.Elapsed.TotalSeconds * AirPlayStreamer.SampleRate);
+        while (samplesSent < due)
+        {
+            for (var i = 0; i < AlacFramer.SamplesPerFrame; i++)
+            {
+                var value = (short)(6000 * Math.Sin(2 * Math.PI * 440 * (samplesSent + i) / AirPlayStreamer.SampleRate));
+                frame[2 * i] = value;
+                frame[2 * i + 1] = value;
+            }
+            streamer.Send(frame);
+            samplesSent += AlacFramer.SamplesPerFrame;
+        }
+        await Task.Delay(2);
+        if (samplesSent % (AirPlayStreamer.SampleRate * 3) < AlacFramer.SamplesPerFrame)
+            Console.WriteLine($"  {stopwatch.Elapsed.TotalSeconds:0}s: {streamer.Diagnostics}");
+    }
+    // The speaker plays about 2.25 s behind; let the end of the tone finish before tearing down
+    await Task.Delay(TimeSpan.FromSeconds(3));
+    Console.WriteLine($"  sent {samplesSent / AlacFramer.SamplesPerFrame} packets; {streamer.Diagnostics}");
+}
+else if (mode == "live")
+{
+    var duration = TimeSpan.FromSeconds(rest.Length > 1 ? int.Parse(rest[1]) : 60);
+    await using var streamer = new AirPlayStreamer(clientId, "EngineSpike");
+    await streamer.AddSpeakerAsync(speaker, volumePercent: 25);
+
+    // Loopback capture, converted to 44.1 kHz 16-bit stereo as the app does
+    using var devices = new MMDeviceEnumerator();
+    using var capture = new WasapiLoopbackCapture(devices.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia));
+    var captured = new BufferedWaveProvider(capture.WaveFormat) { BufferDuration = TimeSpan.FromSeconds(1), DiscardOnBufferOverflow = true, ReadFully = false };
+    var converted = new SampleToWaveProvider16(new WdlResamplingSampleProvider(new MultiplexingSampleProvider([captured.ToSampleProvider()], 2), AirPlayStreamer.SampleRate));
+    capture.DataAvailable += (_, e) => captured.AddSamples(e.Buffer, 0, e.BytesRecorded);
+    capture.StartRecording();
+    Console.WriteLine($"\nStreaming this PC's sound to {speaker.Name} for {duration.TotalSeconds:0} s");
+
+    // Frames go out at the speaker's rate, paced by our clock. Capture arrives in bursts, so a
+    // short wait is allowed for it; past that, Windows is silent and silence fills the gap.
+    // If capture runs faster than our clock, the excess is dropped to keep the delay fixed.
+    var frameDuration = TimeSpan.FromSeconds((double)AlacFramer.SamplesPerFrame / AirPlayStreamer.SampleRate);
+    var waitForCapture = TimeSpan.FromMilliseconds(60);
+    var mostBuffered = TimeSpan.FromMilliseconds(120);
+    var frameBytes = new byte[AlacFramer.SamplesPerFrame * 4];
+    var frame = new short[AlacFramer.SamplesPerFrame * 2];
+    long framesSent = 0, silentFrames = 0, droppedFrames = 0;
+    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+    var nextReport = TimeSpan.FromSeconds(10);
+    while (stopwatch.Elapsed < duration)
+    {
+        while (framesSent * frameDuration < stopwatch.Elapsed)
+        {
+            var behind = stopwatch.Elapsed - framesSent * frameDuration;
+            if (captured.BufferedDuration > frameDuration)
+            {
+                var read = converted.Read(frameBytes, 0, frameBytes.Length);
+                Array.Clear(frameBytes, read, frameBytes.Length - read);
+                if (captured.BufferedDuration > mostBuffered)
+                {
+                    droppedFrames++;
+                    continue;
+                }
+            }
+            else if (behind > waitForCapture)
+            {
+                Array.Clear(frameBytes);
+                silentFrames++;
+            }
+            else
+                break;
+
+            Buffer.BlockCopy(frameBytes, 0, frame, 0, frameBytes.Length);
+            streamer.Send(frame);
+            framesSent++;
+        }
+        if (stopwatch.Elapsed > nextReport)
+        {
+            Console.WriteLine($"  {stopwatch.Elapsed.TotalSeconds:0}s: {framesSent} frames, {silentFrames} silent, {droppedFrames} dropped; {streamer.Diagnostics}");
+            nextReport += TimeSpan.FromSeconds(10);
+        }
+        await Task.Delay(2);
+    }
+    capture.StopRecording();
+    await Task.Delay(TimeSpan.FromSeconds(2.5));
+}
+else if (mode == "info")
 {
     await using var rtsp = await ConnectAsync();
     await PrintInfoAsync(rtsp, "GET /info");

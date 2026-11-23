@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\AirPlay.Engine\AirPlay.Engine.csproj" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
   </ItemGroup>
 
   <PropertyGroup>
