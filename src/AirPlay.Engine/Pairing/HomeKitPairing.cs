@@ -149,10 +149,10 @@ public static class HomeKitPairing
         rtsp.UseStream(stream => new EncryptedChannelStream(stream, writeKey, readKey));
     }
 
-    private static byte[] Derive(byte[] secret, string salt, string info) =>
+    internal static byte[] Derive(byte[] secret, string salt, string info) =>
         HKDF.DeriveKey(HashAlgorithmName.SHA512, secret, 32, Encoding.ASCII.GetBytes(salt), Encoding.ASCII.GetBytes(info));
 
-    private static byte[] Sign(byte[] privateKey, byte[] message)
+    internal static byte[] Sign(byte[] privateKey, byte[] message)
     {
         var signature = new byte[Ed25519.SignatureSize];
         Ed25519.Sign(privateKey, 0, message, 0, message.Length, signature, 0);
@@ -163,7 +163,7 @@ public static class HomeKitPairing
         signature.Length == Ed25519.SignatureSize && Ed25519.Verify(signature, 0, publicKey, 0, message, 0, message.Length);
 
     // Pairing messages encrypt a TLV with a fixed per-message nonce: 4 zero bytes and an 8-byte label
-    private static byte[] Seal(byte[] key, string nonceLabel, byte[] plain)
+    internal static byte[] Seal(byte[] key, string nonceLabel, byte[] plain)
     {
         using var cipher = new ChaCha20Poly1305(key);
         var output = new byte[plain.Length + 16];
@@ -171,7 +171,7 @@ public static class HomeKitPairing
         return output;
     }
 
-    private static byte[] Open(byte[] key, string nonceLabel, byte[] sealedData)
+    internal static byte[] Open(byte[] key, string nonceLabel, byte[] sealedData)
     {
         if (sealedData.Length < 16)
             throw new PairingException("The receiver's encrypted reply is too short.");

@@ -35,6 +35,12 @@ public sealed class PtpMaster : IAsyncDisposable
 
     public ulong ClockId { get; }
 
+    /// <summary>
+    /// The clocks of senders playing to this PC's receivers. They send to the same two ports,
+    /// so the master hands their messages on.
+    /// </summary>
+    public PtpFollower Follower { get; } = new();
+
     /// <summary>How many Delay_Req messages speakers have sent: a sign they follow this clock.</summary>
     public int DelayRequestsAnswered => _delayRequestsAnswered;
 
@@ -140,6 +146,7 @@ public sealed class PtpMaster : IAsyncDisposable
             }
             else
             {
+                Follower.Handle(received.Buffer, receivedAt);
                 Interlocked.Increment(ref _otherMessages);
                 _lastOtherMessageType = received.Buffer.Length > 0 ? PtpMessages.MessageType(received.Buffer) : -1;
             }

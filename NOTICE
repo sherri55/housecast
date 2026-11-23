@@ -31,6 +31,13 @@ The AirPlay engine (src/AirPlay.Engine) is a C# port of parts of OwnTone
 - src/libairptp (the PTP clock master).
   Copyright (c) 2026 OwnTone. MIT License (text below).
 
+The AirPlay receiver (src/AirPlay.Engine/Receiver) follows Shairport Sync
+(https://github.com/mikebrady/shairport-sync): its announced values and
+replies (rtsp.c, bonjour_strings.c), the buffered audio format (player.c),
+and the FairPlay setup replies, which are copied from rtsp.c.
+  Copyright (c) 2011-2014 James Laird, 2014- Mike Brady and the Shairport Sync
+  contributors. MIT License (text below).
+
 
 Libraries
 ---------

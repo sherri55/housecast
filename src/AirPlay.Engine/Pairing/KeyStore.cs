@@ -4,12 +4,16 @@ using System.Text.Json;
 namespace AirPlay.Engine.Pairing;
 
 /// <summary>
-/// Keeps our pairing identity and the keys from PIN pairings, in one file encrypted
-/// for the current Windows user with DPAPI.
+/// Keeps our pairing identity, the keys from PIN pairings, and the long-term keys of the
+/// receivers we announce, in one file encrypted for the current Windows user with DPAPI.
 /// </summary>
 public sealed class KeyStore
 {
-    private sealed record Contents(string ClientId, Dictionary<string, PairingKeys> Pairings);
+    private sealed record Contents(string ClientId, Dictionary<string, PairingKeys> Pairings)
+    {
+        // Files from before receivers existed don't have this
+        public Dictionary<string, byte[]> ReceiverKeys { get; init; } = [];
+    }
 
     private readonly string _path;
     private Contents _contents;
@@ -39,6 +43,21 @@ public sealed class KeyStore
     {
         if (_contents.Pairings.Remove(speakerId))
             Write();
+    }
+
+    /// <summary>
+    /// The Ed25519 private key of a receiver we announce, created the first time it's asked
+    /// for, so the receiver's public key (its <c>pk</c>) stays the same from run to run.
+    /// </summary>
+    /// <param name="deviceId">The receiver's announced device id.</param>
+    public byte[] ReceiverKey(string deviceId)
+    {
+        if (_contents.ReceiverKeys.TryGetValue(deviceId, out var key))
+            return key;
+        key = RandomNumberGenerator.GetBytes(32);
+        _contents.ReceiverKeys[deviceId] = key;
+        Write();
+        return key;
     }
 
     private void Write()

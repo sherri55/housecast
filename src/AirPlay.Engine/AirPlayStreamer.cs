@@ -11,8 +11,9 @@ namespace AirPlay.Engine;
 
 /// <summary>
 /// Sends one audio stream to any number of speakers in sync. Each speaker has its own
-/// session and audio key; all follow one PTP clock and one timeline, on which sample N
-/// is due a fixed buffer after the moment it was handed in.
+/// session and audio key; all follow one PTP clock and one timeline. On it, sample N is
+/// due a fixed buffer after the moment it was handed in, or, for audio relayed from a
+/// sender, at the moment that sender asked for.
 /// </summary>
 public sealed class AirPlayStreamer : IAsyncDisposable
 {
@@ -21,10 +22,11 @@ public sealed class AirPlayStreamer : IAsyncDisposable
     // OwnTone's default: speakers get each sample 2 s before it plays (start_buffer_ms 2250
     // less the receiver's own 250 ms, which latencyMin 11025 accounts for)
     private const int BufferSamples = 88200;
+    private const long BufferNanoseconds = BufferSamples * 1_000_000_000L / SampleRate;
     private const int SyncEverySamples = SampleRate;
     private const int ResendHistory = 1000;
 
-    private readonly PtpMaster _ptp = new();
+    private readonly PtpMaster _ptp;
     private readonly UdpClient _control = UdpSockets.Bind(0);
     private readonly UdpClient _data = UdpSockets.Bind(0);
     private readonly List<Target> _targets = [];
@@ -44,12 +46,14 @@ public sealed class AirPlayStreamer : IAsyncDisposable
     public StreamerDiagnostics Diagnostics =>
         new(_controlPacketsReceived, _resendRequests, _ptp.DelayRequestsAnswered, _ptp.OtherMessages.Count, _ptp.SendFailures.Count);
     private uint _anchorRtpTime;
+    private readonly TimedAudioQueue _timed = new();
 
-    public AirPlayStreamer(ulong clientId, string clientName)
+    /// <param name="ptp">The clock every speaker follows, started; shared by every streamer of an engine.</param>
+    public AirPlayStreamer(PtpMaster ptp, ulong clientId, string clientName)
     {
+        _ptp = ptp;
         _clientId = clientId;
         _clientName = clientName;
-        _ptp.Start();
         _resendLoop = Task.Run(() => ResendLoopAsync(_stop.Token));
     }
 
@@ -124,12 +128,38 @@ public sealed class AirPlayStreamer : IAsyncDisposable
     /// </summary>
     public void Send(ReadOnlySpan<short> interleavedFrame)
     {
-        var frame = AlacFramer.Encode(interleavedFrame);
         if (_anchorNanoseconds < 0)
         {
             _anchorNanoseconds = EngineClock.NowNanoseconds;
             _anchorRtpTime = _rtpTime;
         }
+        var handedInAt = _anchorNanoseconds + (long)(uint)(_rtpTime - _anchorRtpTime) * 1_000_000_000 / SampleRate;
+        SendFrame(interleavedFrame, handedInAt + BufferNanoseconds);
+    }
+
+    /// <summary>
+    /// Queues stereo samples of any length to play from <paramref name="playAtNanoseconds"/> on
+    /// <see cref="EngineClock"/>, e.g. a sender's audio relayed at the moment it asked for.
+    /// <see cref="PumpTimed"/> sends them. Samples for a moment already sent are dropped.
+    /// </summary>
+    public void SendTimed(ReadOnlySpan<short> interleaved, long playAtNanoseconds) => _timed.Add(interleaved, playAtNanoseconds);
+
+    /// <summary>
+    /// Sends the timed audio due within <paramref name="lead"/>, and silence where none was
+    /// queued; call it every few milliseconds.
+    /// </summary>
+    public void PumpTimed(TimeSpan lead)
+    {
+        foreach (var (frame, playAt) in _timed.TakeDue(EngineClock.NowNanoseconds + (long)lead.TotalMilliseconds * 1_000_000))
+            SendFrame(frame, playAt);
+    }
+
+    /// <summary>Drops the timed audio not yet sent; the next <see cref="SendTimed"/> starts a new timeline.</summary>
+    public void StopTimed() => _timed.Clear();
+
+    private void SendFrame(ReadOnlySpan<short> interleavedFrame, long playAtNanoseconds)
+    {
+        var frame = AlacFramer.Encode(interleavedFrame);
 
         Target[] targets;
         lock (_targets)
@@ -140,7 +170,7 @@ public sealed class AirPlayStreamer : IAsyncDisposable
             var starting = !target.Started;
             if (starting || target.SamplesSinceSync >= SyncEverySamples)
             {
-                SendSync(target, first: starting);
+                SendSync(target, playAtNanoseconds, first: starting);
                 target.SamplesSinceSync = 0;
                 target.Started = true;
             }
@@ -159,13 +189,12 @@ public sealed class AirPlayStreamer : IAsyncDisposable
         _rtpTime += AlacFramer.SamplesPerFrame;
     }
 
-    // Says which sample plays at which clock time: the next one is due BufferSamples after it
-    // was handed in, shifted by the speaker's own offset
-    private void SendSync(Target target, bool first)
+    // Says which sample plays at which clock time: the next one plays at playAtNanoseconds, so
+    // the one BufferSamples before it plays that much earlier, shifted by the speaker's own offset
+    private void SendSync(Target target, long playAtNanoseconds, bool first)
     {
-        var handedInAt = _anchorNanoseconds + (long)(uint)(_rtpTime - _anchorRtpTime) * 1_000_000_000 / SampleRate;
         var playingNow = (uint)(_rtpTime - BufferSamples - target.OffsetSamples);
-        var sync = RtpPackets.Sync(playingNow, handedInAt, _rtpTime, _ptp.ClockId, first);
+        var sync = RtpPackets.Sync(playingNow, playAtNanoseconds - BufferNanoseconds, _rtpTime, _ptp.ClockId, first);
         _control.Send(sync, target.Session.ControlEndPoint);
     }
 
@@ -220,7 +249,6 @@ public sealed class AirPlayStreamer : IAsyncDisposable
 
         _stop.Cancel();
         await _resendLoop;
-        await _ptp.DisposeAsync();
         _control.Dispose();
         _data.Dispose();
         _stop.Dispose();

@@ -5,19 +5,81 @@
 //                                             Then reconnects with pair-verify and the saved keys.
 //   EngineSpike tone "name[,name…]" [joiner]  beeps on several speakers in sync for 20 s; the joiner joins 8 s in
 //   EngineSpike live "speaker name" [seconds] whatever Windows is playing, for 60 s by default
+//   EngineSpike receive "name" [minutes] [wav] announces an AirPlay receiver, logs what senders do and writes
+//                                             their audio to a WAV as it falls due; 10 min by default
+//   EngineSpike relay "group" ["a,b"] [min]  announces a group of speakers (Bedroom 1 and 2 by default); what an
+//                                             iPhone plays to it plays on them, in sync with the phone
 using AirPlay.Engine;
 using AirPlay.Engine.Audio;
 using AirPlay.Engine.Discovery;
 using AirPlay.Engine.Pairing;
+using AirPlay.Engine.Ptp;
+using AirPlay.Engine.Receiver;
 using AirPlay.Engine.Rtsp;
 using Claunia.PropertyList;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
-var mode = args.Length > 0 && args[0] is "info" or "pin" or "tone" or "live" ? args[0] : "info";
+var mode = args.Length > 0 && args[0] is "info" or "pin" or "tone" or "live" or "receive" or "relay" ? args[0] : "info";
 var rest = mode == args.FirstOrDefault() ? args[1..] : args;
 var target = rest.Length > 0 ? rest[0] : "Bedroom 2";
+
+if (mode == "receive")
+{
+    var receiverKeys = new KeyStore(Path.Combine(AppContext.BaseDirectory, "spike-pairings.bin"));
+    var wavPath = rest.Length > 2 ? rest[2] : Path.Combine(AppContext.BaseDirectory, "received.wav");
+    await using var clock = new PtpMaster();
+    clock.Start();
+    using (var wav = new WaveFileWriter(wavPath, new WaveFormat(44100, 16, 2)))
+    {
+        var frames = 0;
+        await using var receiver = await AirPlayReceiver.StartAsync(target, receiverKeys, clock.Follower, TimeSpan.Zero);
+        receiver.Logged += message => Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {message}");
+        receiver.AudioDue += audio =>
+        {
+            wav.Write(audio.Pcm);
+            if (++frames % 431 == 0)
+            {
+                // Keeps the header current, so the file plays even if this is stopped
+                wav.Flush();
+                Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff}   {wav.TotalTime:mm\\:ss} written; this frame was due {(audio.PlayAtNanoseconds - EngineClock.NowNanoseconds) / 1_000_000} ms from now");
+            }
+        };
+        var minutes = rest.Length > 1 ? int.Parse(rest[1]) : 10;
+        Console.WriteLine($"'{target}' is announced for {minutes} min; pick it in an iPhone's AirPlay list. Audio goes to {wavPath}");
+        await Task.Delay(TimeSpan.FromMinutes(minutes));
+    }
+    return;
+}
+
+if (mode == "relay")
+{
+    await using var engine = new AirPlayEngine("EngineSpike", new KeyStore(Path.Combine(AppContext.BaseDirectory, "spike-pairings.bin")));
+    engine.GroupPlaybackChanged += (group, sender) =>
+        Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {group}: {(sender is null ? "stopped; speakers given back" : $"playing from {sender}")}");
+    engine.ReceiverLogged += message => Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {message}");
+    var memberNames = rest.Length > 1 ? rest[1].Split(',') : ["Bedroom 1", "Bedroom 2"];
+    // The engine scans every 10 s; wait up to a minute for the members
+    List<AirPlaySpeaker?> members = [];
+    for (var wait = 0; wait < 60; wait++)
+    {
+        members = memberNames.Select(name => engine.Speakers.FirstOrDefault(s => s.Name == name)).ToList();
+        if (!members.Contains(null))
+            break;
+        await Task.Delay(TimeSpan.FromSeconds(1));
+    }
+    if (members.Contains(null))
+    {
+        Console.WriteLine($"Not all of {string.Join(", ", memberNames)} were found; saw {string.Join(", ", engine.Speakers.Select(s => s.Name))}");
+        return;
+    }
+    await engine.PublishGroupsAsync([new AirPlayGroup(target, members.Select(s => new GroupMember(s!.Id, 40, 0)).ToList())]);
+    var relayMinutes = rest.Length > 2 ? int.Parse(rest[2]) : 15;
+    Console.WriteLine($"'{target}' ({string.Join(", ", memberNames)}) is announced for {relayMinutes} min; play to it from an iPhone");
+    await Task.Delay(TimeSpan.FromMinutes(relayMinutes));
+    return;
+}
 
 Console.WriteLine("Looking for AirPlay speakers…");
 var speakers = await SpeakerBrowser.BrowseAsync(TimeSpan.FromSeconds(8));
@@ -46,7 +108,9 @@ if (mode == "tone")
         return;
     }
 
-    await using var streamer = new AirPlayStreamer(clientId, "EngineSpike");
+    await using var ptp = new PtpMaster();
+    ptp.Start();
+    await using var streamer = new AirPlayStreamer(ptp, clientId, "EngineSpike");
     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
     await Task.WhenAll(named.Select(s => streamer.AddSpeakerAsync(s!, volumePercent: 25)));
     Console.WriteLine($"\nSessions set up with {target} in {stopwatch.ElapsedMilliseconds} ms; beeping for 20 s");
