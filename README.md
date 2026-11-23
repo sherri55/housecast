@@ -11,6 +11,7 @@ It works with AirPlay speakers on its own: no Mac, iPhone, extra box or bridge s
 - **Any sound from the PC:** music, video, games and calls, whatever Windows plays on its default output.
 - **Several speakers in sync**, started together or added while playing.
 - **Groups:** name a set of speakers and play them all with one tick.
+- **Groups on your iPhone and iPad:** each group also appears in their AirPlay list as one speaker. Play to it, and all its speakers play together, in sync with the device.
 - **Per-speaker volume and delay**, plus one volume for all of them. Delay changes apply while playing.
 - **Remembers your speakers** and plays them again when Housecast starts.
 - **Mutes the PC's own speakers** if you want, since they play ahead of the AirPlay ones.
@@ -22,7 +23,7 @@ It works with AirPlay speakers on its own: no Mac, iPhone, extra box or bridge s
 2. Run it. The installer isn't code-signed yet, so Windows SmartScreen may warn: choose **More info**, then **Run anyway**.
 3. Housecast starts in the tray. Click its icon to pick speakers.
 
-The installer asks for administrator rights so it can add a Windows Firewall rule that lets your speakers answer Housecast. Without it, speakers connect but play nothing.
+The installer asks for administrator rights so it can add a Windows Firewall rule that lets your speakers answer Housecast, and lets iPhones and iPads reach your groups. Without it, speakers connect but play nothing, and groups don't connect from other devices.
 
 **Requirements**
 
@@ -44,7 +45,12 @@ Click the tray icon to open the flyout. The header shows where the sound is play
 | This PC | Untick to mute the PC's own speakers while AirPlay plays. Quitting puts the mute back as it was. |
 | Volume (header) | Scales every speaker's volume at once. |
 
-Each slider has − and + buttons (hold to repeat). Right-click the tray icon for **Start with Windows** and **Quit**. Quitting stops the speakers.
+Each slider has − and + buttons (hold to repeat). Right-click the tray icon for **Start with Windows**, **Restart**, **Uninstall Housecast** and **Quit**. Quitting stops the speakers.
+
+**Playing to a group from an iPhone or iPad.** Every group you make shows up in their AirPlay list under its own name, while Housecast runs. Pick it and play: the group's speakers stop playing the PC's sound, play the device's instead, in sync with it (video included), and go back to the PC's sound when it stops. The device's volume scales each speaker's own, and the flyout's header shows which device is playing. Macs list groups too, but playing from a Mac is untested, and its whole system sound isn't supported. Two things to expect:
+
+- About half a second of silence each time you press play, resume, skip or seek. The device asks for its sound to be heard the moment it sends it, and the first moments can't reach the speakers in time.
+- The device shows a group with the same plain speaker icon as any other non-Apple speaker; iOS chooses that icon itself.
 
 **Pairing with a PIN.** Most speakers play straight away. A device that asks for pairing shows a PIN on its screen, and Housecast shows a PIN box under it: type the PIN and press **Pair**. Housecast remembers the pairing.
 
@@ -56,6 +62,7 @@ Each slider has − and + buttons (hold to repeat). Right-click the tray icon fo
 - **A speaker ticks but plays nothing**: check the network is set to Private, and that the installer's firewall rule exists: `Get-NetFirewallRule -DisplayName Housecast`.
 - **No speakers listed**: the PC and speakers must be on the same network, and the speakers must support AirPlay 2.
 - **A speaker unticks itself**: it stopped answering, or another device started playing on it.
+- **A group isn't in the iPhone's AirPlay list**: Housecast must be running, the device on the same network, and Windows set to Private. If it's listed but won't connect, check the firewall rule as above.
 
 ## Building from source
 
@@ -72,14 +79,16 @@ Pushing a tag such as `v1.0.0` runs the same build on GitHub Actions and attache
 | Folder | What's in it |
 |---|---|
 | `src/Housecast` | The WPF tray app: capture, flyout, settings. |
-| `src/AirPlay.Engine` | The AirPlay 2 sender: discovery (Windows DNS-SD), HomeKit pairing, RTSP sessions, the PTP clock master that keeps speakers in sync, encrypted RTP audio, and pacing. |
+| `src/AirPlay.Engine` | The AirPlay 2 sender: discovery (Windows DNS-SD), HomeKit pairing, RTSP sessions, the PTP clock master that keeps speakers in sync, encrypted RTP audio, and pacing. Also the AirPlay 2 receiver that announces groups (`Receiver/`) and relays what devices play to them. |
 | `tests/AirPlay.Engine.Tests` | xUnit tests, including PTP messages checked byte for byte against a working sender. |
-| `tools/EngineSpike` | A console app for trying the engine on real speakers: `dotnet run --project tools\EngineSpike -- tone "Speaker name"`. |
+| `tools/EngineSpike` | A console app for trying the engine on real speakers: `dotnet run --project tools\EngineSpike -- tone "Speaker name"`, or `relay "Group name" "Speaker 1,Speaker 2"` to try a group from an iPhone. |
 | `installer` | The Inno Setup script. |
 
 ## How it works
 
 Housecast captures the PC's sound with WASAPI loopback and converts it to 44.1 kHz 16-bit stereo. Its engine is a C# port of the AirPlay 2 sender in [OwnTone](https://github.com/owntone/owntone-server). It pairs with each speaker, acts as the PTP clock every speaker follows, and sends the audio as encrypted ALAC packets on one shared timeline. That shared clock and timeline are what keep several speakers in sync.
+
+For groups, Housecast is also an AirPlay 2 receiver, following [Shairport Sync](https://github.com/mikebrady/shairport-sync). Each group is announced as a speaker of its own. When a device plays to it, Housecast follows the device's PTP clock, decodes its AAC audio with Windows' own decoder, and sends it on to the group's speakers on a stream of their own, timed to play when the device asked.
 
 ## Licence
 
