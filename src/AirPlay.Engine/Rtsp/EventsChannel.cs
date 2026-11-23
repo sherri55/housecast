@@ -19,6 +19,9 @@ internal sealed class EventsChannel : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private Task _loop = Task.CompletedTask;
 
+    /// <summary>Completes when the receiver closes the channel, or when this is disposed.</summary>
+    public Task Closed => _loop;
+
     public async Task ConnectAsync(IPAddress address, int port, byte[] sharedSecret, CancellationToken cancellationToken)
     {
         await _tcp.ConnectAsync(address, port, cancellationToken);

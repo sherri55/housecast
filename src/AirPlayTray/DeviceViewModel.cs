@@ -1,30 +1,36 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using AirPlay.Engine;
+using AirPlay.Engine.Discovery;
 
 namespace AirPlayTray;
 
 public sealed class DeviceViewModel : INotifyPropertyChanged
 {
-    private readonly OwnToneClient _client;
+    private readonly AirPlayEngine _engine;
+    private readonly DeviceModels.DeviceModel _model;
     private bool _isSelected;
     private int _volume;
     private int _offsetMs;
     private bool _needsPin;
     private bool _isBusy;
-    private DeviceModels.DeviceModel? _model;
 
-    public DeviceViewModel(OwnToneClient client, OwnToneOutput output)
+    public DeviceViewModel(AirPlayEngine engine, AirPlaySpeaker speaker)
     {
-        _client = client;
-        Id = output.Id;
-        Name = output.Name;
-        Update(output);
+        _engine = engine;
+        Id = speaker.Id;
+        Name = speaker.Name;
+        _model = DeviceModels.Describe(speaker.Model, speaker.Manufacturer);
+        var setting = WindowsSettings.SpeakerSettingFor(Id);
+        _volume = setting.Volume;
+        _offsetMs = setting.OffsetMs;
+        _isSelected = engine.IsPlaying(Id);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     /// <summary>
-    /// Raised after the user ticked or unticked this device and OwnTone has applied it.
+    /// Raised after the user ticked or unticked this device and the engine has applied it.
     /// </summary>
     public event Action? UserSelectionChanged;
 
@@ -32,29 +38,16 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
     public string Name { get; }
     public string Pin { get; set; } = "";
 
-    public DeviceModels.DeviceModel? Model
-    {
-        get => _model;
-        set
-        {
-            if (!Set(ref _model, value))
-                return;
-            OnPropertyChanged(nameof(Icon));
-            OnPropertyChanged(nameof(Description));
-        }
-    }
-
-    public string Icon => Model?.Icon ?? DeviceModels.SpeakerIcon;
-    public string Description => Model?.Description ?? "AirPlay";
+    public string Icon => _model.Icon;
+    public string Description => _model.Description;
 
     public bool IsSelected
     {
         get => _isSelected;
         set
         {
-            if (!Set(ref _isSelected, value))
-                return;
-            _ = ApplySelectionAsync(value);
+            if (Set(ref _isSelected, value))
+                _ = SetPlayingAsync(value);
         }
     }
 
@@ -63,8 +56,10 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
         get => _volume;
         set
         {
-            if (Set(ref _volume, value))
-                _ = _client.SetVolumeAsync(Id, value);
+            if (!Set(ref _volume, value))
+                return;
+            SaveSetting();
+            _ = _engine.SetVolumeAsync(Id, value);
         }
     }
 
@@ -73,8 +68,10 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
         get => _offsetMs;
         set
         {
-            if (Set(ref _offsetMs, value))
-                _ = ApplyOffsetAsync(value);
+            if (!Set(ref _offsetMs, value))
+                return;
+            SaveSetting();
+            _engine.SetOffset(Id, value);
         }
     }
 
@@ -91,75 +88,56 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Takes the latest state from OwnTone without sending anything back to it.
+    /// Takes the engine's latest state, e.g. after the speaker dropped us, without sending anything.
     /// </summary>
-    public void Update(OwnToneOutput output)
+    public void Update()
     {
-        if (IsBusy)
-            return;
+        if (!IsBusy)
+            Set(ref _isSelected, _engine.IsPlaying(Id), nameof(IsSelected));
+    }
 
-        Set(ref _isSelected, output.Selected, nameof(IsSelected));
-        Set(ref _volume, output.Volume, nameof(Volume));
-        Set(ref _offsetMs, output.OffsetMs, nameof(OffsetMs));
+    /// <summary>
+    /// Starts or stops this speaker, as ticking it does; groups use it for each member.
+    /// </summary>
+    public async Task SetPlayingAsync(bool playing)
+    {
+        Set(ref _isSelected, playing, nameof(IsSelected));
+        IsBusy = true;
+        try
+        {
+            if (!playing)
+            {
+                await _engine.StopAsync(Id);
+                return;
+            }
+
+            // A device that has never been paired shows a PIN instead of playing
+            var result = await _engine.PlayAsync(Id, Volume, OffsetMs);
+            NeedsPin = result == PlayResult.NeedsPin;
+            Set(ref _isSelected, result == PlayResult.Playing, nameof(IsSelected));
+        }
+        finally
+        {
+            IsBusy = false;
+            UserSelectionChanged?.Invoke();
+        }
     }
 
     public async Task SubmitPinAsync()
     {
-        IsBusy = true;
-        try
-        {
-            if (!await _client.SendPinAsync(Id, Pin.Trim()))
-                return;
+        // A wrong PIN ends that pairing attempt too; ticking the speaker again shows a new PIN
+        var paired = await _engine.SubmitPinAsync(Id, Pin.Trim());
+        NeedsPin = false;
+        if (!paired)
+            return;
 
-            NeedsPin = false;
-            Pin = "";
-            OnPropertyChanged(nameof(Pin));
-            Set(ref _isSelected, await _client.SetSelectedAsync(Id, true), nameof(IsSelected));
-        }
-        finally
-        {
-            IsBusy = false;
-            UserSelectionChanged?.Invoke();
-        }
+        Pin = "";
+        OnPropertyChanged(nameof(Pin));
+        await SetPlayingAsync(true);
     }
 
-    // OwnTone only reads a device's offset when it connects, so a playing device reconnects to use it
-    private async Task ApplyOffsetAsync(int offsetMs)
-    {
-        IsBusy = true;
-        try
-        {
-            if (!await _client.SetOffsetAsync(Id, offsetMs) || !_isSelected)
-                return;
-
-            await _client.SetSelectedAsync(Id, false);
-            await _client.SetSelectedAsync(Id, true);
-        }
-        finally
-        {
-            IsBusy = false;
-        }
-    }
-
-    private async Task ApplySelectionAsync(bool selected)
-    {
-        IsBusy = true;
-        try
-        {
-            if (await _client.SetSelectedAsync(Id, selected) || !selected)
-                return;
-
-            // A device that has never been paired shows a PIN instead of playing
-            var output = (await _client.GetOutputsAsync()).FirstOrDefault(o => o.Id == Id);
-            NeedsPin = output is { RequiresAuth: true, NeedsAuthKey: true };
-            Set(ref _isSelected, false, nameof(IsSelected));
-        }
-        finally
-        {
-            IsBusy = false;
-            UserSelectionChanged?.Invoke();
-        }
-    }
+    private void SaveSetting() =>
+        WindowsSettings.SaveSpeakerSetting(Id, new WindowsSettings.SpeakerSetting(_volume, _offsetMs));
 
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {

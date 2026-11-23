@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using AirPlay.Engine.Audio;
 using AirPlay.Engine.Discovery;
+using AirPlay.Engine.Pairing;
 using AirPlay.Engine.Ptp;
 using AirPlay.Engine.Rtp;
 
@@ -63,13 +64,16 @@ public sealed class AirPlayStreamer : IAsyncDisposable
     }
 
     /// <param name="offsetMilliseconds">Plays this speaker later (positive) or earlier (negative) than the rest.</param>
-    public async Task<AirPlaySession> AddSpeakerAsync(AirPlaySpeaker speaker, int volumePercent, int offsetMilliseconds = 0, CancellationToken cancellationToken = default)
+    /// <param name="pairing">Keys from an earlier PIN pairing, or null for transient pairing.</param>
+    /// <param name="pairingId">The identifier those keys were made with.</param>
+    public async Task<AirPlaySession> AddSpeakerAsync(AirPlaySpeaker speaker, int volumePercent, int offsetMilliseconds = 0,
+        PairingKeys? pairing = null, string pairingId = "", CancellationToken cancellationToken = default)
     {
         var session = new AirPlaySession(speaker, _clientId, _clientName);
         try
         {
             var controlPort = ((IPEndPoint)_control.Client.LocalEndPoint!).Port;
-            await session.StartAsync(_ptp.ClockId, _ptp.AddPeer, controlPort, volumePercent, cancellationToken);
+            await session.StartAsync(_ptp.ClockId, _ptp.AddPeer, controlPort, volumePercent, pairing, pairingId, cancellationToken);
         }
         catch
         {

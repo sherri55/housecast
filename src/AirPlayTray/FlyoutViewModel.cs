@@ -1,18 +1,13 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.IO;
-using System.Net.Http;
+using AirPlay.Engine;
 using NAudio.CoreAudioApi;
 
 namespace AirPlayTray;
 
 public sealed class FlyoutViewModel : INotifyPropertyChanged
 {
-    private readonly OwnToneClient _client;
-    private readonly string _distro;
-    private Dictionary<string, DeviceModels.DeviceModel> _models = [];
-    private DateTime _modelsReadAt = DateTime.MinValue;
-    private bool _readingModels;
+    private readonly AirPlayEngine _engine;
     private bool _isEditingGroup;
     private string _groupError = "";
     private WindowsSettings.SpeakerGroup? _editingGroup;
@@ -20,13 +15,12 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
     private readonly MMDevice _localDevice;
     private readonly AudioEndpointVolume _localSpeakers;
     private readonly bool _localWasMuted;
-    private string _status = "Starting AirPlay engine…";
-    private int _masterVolume = 50;
+    private string _status = "Looking for AirPlay devices…";
 
-    public FlyoutViewModel(OwnToneClient client, string distro)
+    public FlyoutViewModel(AirPlayEngine engine)
     {
-        _client = client;
-        _distro = distro;
+        _engine = engine;
+        _engine.MasterVolume = WindowsSettings.MasterVolume;
         using var enumerator = new MMDeviceEnumerator();
         _localDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
         _localSpeakers = _localDevice.AudioEndpointVolume;
@@ -64,12 +58,12 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
 
     public int MasterVolume
     {
-        get => _masterVolume;
+        get => _engine.MasterVolume;
         set
         {
-            _masterVolume = value;
+            _engine.MasterVolume = value;
+            WindowsSettings.MasterVolume = value;
             OnPropertyChanged(nameof(MasterVolume));
-            _ = _client.SetMasterVolumeAsync(value);
         }
     }
 
@@ -93,32 +87,20 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
 
     public bool HasGroups => Groups.Count > 0;
 
-    public async Task RefreshAsync()
+    public void Refresh()
     {
-        IReadOnlyList<OwnToneOutput> outputs;
-        try
-        {
-            outputs = await _client.GetOutputsAsync();
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-        {
-            Status = Devices.Count == 0 ? "Starting AirPlay engine…" : "AirPlay engine isn't responding";
-            return;
-        }
+        var speakers = _engine.Speakers;
 
-        // OwnTone's own "Computer" output is the WSL sound card, which plays nowhere
-        var airPlay = outputs.Where(o => o.Type.StartsWith("AirPlay", StringComparison.Ordinal)).ToList();
-
-        foreach (var gone in Devices.Where(d => airPlay.All(o => o.Id != d.Id)).ToList())
+        foreach (var gone in Devices.Where(d => speakers.All(s => s.Id != d.Id)).ToList())
             Devices.Remove(gone);
 
-        foreach (var output in airPlay)
+        foreach (var speaker in speakers)
         {
-            var existing = Devices.FirstOrDefault(d => d.Id == output.Id);
+            var existing = Devices.FirstOrDefault(d => d.Id == speaker.Id);
             if (existing is null)
             {
-                var index = Devices.TakeWhile(d => string.Compare(d.Name, output.Name, StringComparison.CurrentCultureIgnoreCase) < 0).Count();
-                var device = new DeviceViewModel(_client, output);
+                var index = Devices.TakeWhile(d => string.Compare(d.Name, speaker.Name, StringComparison.CurrentCultureIgnoreCase) < 0).Count();
+                var device = new DeviceViewModel(_engine, speaker);
                 device.UserSelectionChanged += SaveSelection;
                 device.PropertyChanged += (_, e) =>
                 {
@@ -128,17 +110,12 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
                 Devices.Insert(index, device);
             }
             else
-                existing.Update(output);
+                existing.Update();
         }
 
         Status = Devices.Count == 0 ? "Looking for AirPlay devices…" : "";
-        // Covers speakers that left the network or changed in OwnTone without a click here
+        // Covers speakers that left the network or dropped us without a click here
         OnPropertyChanged(nameof(NowPlaying));
-
-        foreach (var device in Devices)
-            device.Model ??= _models.GetValueOrDefault(device.Name);
-        if (Devices.Any(d => d.Model is null) && !_readingModels && DateTime.UtcNow - _modelsReadAt > TimeSpan.FromSeconds(30))
-            _ = ReadModelsAsync();
 
         foreach (var group in Groups)
             group.SetMembers(Devices.Where(d => group.Group.SpeakerIds.Contains(d.Id)));
@@ -244,10 +221,10 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
         Groups.Clear();
         foreach (var group in WindowsSettings.Groups)
         {
-            // Read OwnTone's new state before saving, or the speakers' old ticks get remembered
-            var model = new GroupViewModel(_client, group, async () =>
+            // Read the engine's new state before saving, or the speakers' old ticks get remembered
+            var model = new GroupViewModel(group, () =>
             {
-                await RefreshAsync();
+                Refresh();
                 SaveSelection();
             });
             model.SetMembers(Devices.Where(d => group.SpeakerIds.Contains(d.Id)));
@@ -269,29 +246,6 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
     }
 
     public void RestoreLocalSpeakers() => _localSpeakers.Mute = _localWasMuted;
-
-    // Reading the announcements takes a second or two, so it happens in the background
-    // and only again when a device turns up that isn't known yet
-    private async Task ReadModelsAsync()
-    {
-        _readingModels = true;
-        try
-        {
-            _models = await DeviceModels.ReadAsync(_distro);
-        }
-        catch (Exception ex) when (ex is Win32Exception or IOException)
-        {
-            // WSL isn't reachable yet; the next refresh tries again
-        }
-        finally
-        {
-            _modelsReadAt = DateTime.UtcNow;
-            _readingModels = false;
-        }
-
-        foreach (var device in Devices)
-            device.Model ??= _models.GetValueOrDefault(device.Name);
-    }
 
     // Speakers that are switched off right now keep whatever was remembered for them
     private void SaveSelection()

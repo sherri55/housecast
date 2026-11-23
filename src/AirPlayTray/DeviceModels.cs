@@ -1,11 +1,7 @@
-using System.Diagnostics;
-using System.Text.RegularExpressions;
-
 namespace AirPlayTray;
 
 /// <summary>
-/// What each AirPlay device says it is, read from its network announcement inside WSL,
-/// because OwnTone's API doesn't pass the model on.
+/// What each AirPlay device says it is, from the model and maker in its network announcement.
 /// </summary>
 public static class DeviceModels
 {
@@ -23,38 +19,9 @@ public static class DeviceModels
     public const string GroupIcon = "\uE80F";
 
     /// <summary>
-    /// Returns each announced device's model, keyed by the name OwnTone also uses.
+    /// The icon and description for a device, from the model and maker it announces.
     /// </summary>
-    public static async Task<Dictionary<string, DeviceModel>> ReadAsync(string distro)
-    {
-        using var browse = Process.Start(new ProcessStartInfo
-        {
-            FileName = "wsl.exe",
-            ArgumentList = { "-d", distro, "--", "avahi-browse", "--resolve", "--parsable", "--terminate", "_airplay._tcp" },
-            RedirectStandardOutput = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        })!;
-        var output = await browse.StandardOutput.ReadToEndAsync();
-        await browse.WaitForExitAsync();
-
-        var models = new Dictionary<string, DeviceModel>();
-        // Resolved lines: =;interface;protocol;name;type;domain;host;address;port;"key=value" "key=value"...
-        foreach (var line in output.Split('\n'))
-        {
-            var fields = line.Split(';');
-            if (fields.Length < 10 || fields[0] != "=")
-                continue;
-
-            var name = Unescape(fields[3]);
-            var model = TxtValue(fields[9], "model");
-            var maker = TxtValue(fields[9], "manufacturer");
-            models[name] = Describe(model, maker);
-        }
-        return models;
-    }
-
-    private static DeviceModel Describe(string model, string maker)
+    public static DeviceModel Describe(string model, string maker)
     {
         // "Yamaha Corporation" reads better as "Yamaha"
         var brand = maker.Split(' ')[0];
@@ -72,15 +39,5 @@ public static class DeviceModels
         if (model.StartsWith("RX-", StringComparison.Ordinal))
             return new DeviceModel(ReceiverIcon, named);
         return new DeviceModel(SpeakerIcon, named);
-    }
-
-    // Avahi writes spaces and punctuation in names as \DDD decimal escapes, e.g. \032 for a space
-    private static string Unescape(string text) =>
-        Regex.Replace(text, @"\\(\d{3})", m => ((char)int.Parse(m.Groups[1].Value)).ToString());
-
-    private static string TxtValue(string txt, string key)
-    {
-        var match = Regex.Match(txt, $"\"{key}=([^\"]*)\"");
-        return match.Success ? match.Groups[1].Value : "";
     }
 }

@@ -20,7 +20,7 @@ public partial class FlyoutWindow : Window
         // Taller than this and the content scrolls instead
         MaxHeight = SystemParameters.WorkArea.Height;
 
-        _refreshTimer.Tick += async (_, _) => await _viewModel.RefreshAsync();
+        _refreshTimer.Tick += (_, _) => _viewModel.Refresh();
         Deactivated += (_, _) =>
         {
             Hide();
@@ -30,7 +30,7 @@ public partial class FlyoutWindow : Window
         SizeChanged += (_, _) => PlaceAboveTray();
     }
 
-    public async void Toggle()
+    public void Toggle()
     {
         // Clicking the tray icon deactivates the flyout first, which already hid it
         if (IsVisible || DateTime.UtcNow - _hiddenAt < TimeSpan.FromMilliseconds(300))
@@ -43,7 +43,7 @@ public partial class FlyoutWindow : Window
         PlaceAboveTray();
         PlayOpenAnimation();
         Activate();
-        await _viewModel.RefreshAsync();
+        _viewModel.Refresh();
     }
 
     // Tones follow Windows 11's own flyouts; the accent is the user's Windows accent colour

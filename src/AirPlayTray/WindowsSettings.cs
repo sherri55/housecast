@@ -6,7 +6,8 @@ namespace AirPlayTray;
 
 /// <summary>
 /// Per-user settings kept in the registry: the Windows theme and accent colour the app follows,
-/// starting with Windows, and the app's own settings: remembered speakers and groups.
+/// starting with Windows, and the app's own settings: remembered speakers, their volume and
+/// delay, and groups.
 /// </summary>
 public static class WindowsSettings
 {
@@ -37,7 +38,7 @@ public static class WindowsSettings
     public static bool TaskbarUsesLightTheme => ReadPersonalize("SystemUsesLightTheme");
 
     /// <summary>
-    /// OwnTone ids of the speakers the user last ticked, reselected when playback restarts.
+    /// Ids of the speakers the user last ticked, played again when nothing is playing.
     /// </summary>
     public static string[] SelectedSpeakerIds
     {
@@ -50,6 +51,45 @@ public static class WindowsSettings
         {
             using var key = Registry.CurrentUser.CreateSubKey(AppKey);
             key.SetValue(nameof(SelectedSpeakerIds), value, RegistryValueKind.MultiString);
+        }
+    }
+
+    public sealed record SpeakerSetting(int Volume, int OffsetMs);
+
+    private static readonly SpeakerSetting DefaultSpeakerSetting = new(50, 0);
+
+    public static SpeakerSetting SpeakerSettingFor(string speakerId) =>
+        ReadSpeakerSettings().GetValueOrDefault(speakerId, DefaultSpeakerSetting);
+
+    public static void SaveSpeakerSetting(string speakerId, SpeakerSetting setting)
+    {
+        var settings = ReadSpeakerSettings();
+        settings[speakerId] = setting;
+        using var key = Registry.CurrentUser.CreateSubKey(AppKey);
+        key.SetValue("SpeakerSettings", JsonSerializer.Serialize(settings), RegistryValueKind.String);
+    }
+
+    // Each speaker's volume and delay, stored as JSON keyed by speaker id
+    private static Dictionary<string, SpeakerSetting> ReadSpeakerSettings()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(AppKey);
+        return key?.GetValue("SpeakerSettings") is string json
+            ? JsonSerializer.Deserialize<Dictionary<string, SpeakerSetting>>(json) ?? []
+            : [];
+    }
+
+    /// <summary>Scales every speaker's volume, 0–100.</summary>
+    public static int MasterVolume
+    {
+        get
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(AppKey);
+            return key?.GetValue(nameof(MasterVolume)) as int? ?? 100;
+        }
+        set
+        {
+            using var key = Registry.CurrentUser.CreateSubKey(AppKey);
+            key.SetValue(nameof(MasterVolume), value, RegistryValueKind.DWord);
         }
     }
 

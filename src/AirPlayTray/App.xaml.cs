@@ -1,8 +1,10 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Net.Http;
+using System.Net.Sockets;
 using System.Windows;
 using System.Windows.Threading;
+using AirPlay.Engine;
+using AirPlay.Engine.Pairing;
 using Microsoft.Win32;
 using Forms = System.Windows.Forms;
 
@@ -10,12 +12,10 @@ namespace AirPlayTray;
 
 public partial class App : System.Windows.Application
 {
-    private const string Distro = "airplay";
-    private const string PipePath = "/srv/music/pc-audio";
-
     private Mutex? _singleInstance;
-    private OwnToneClient? _client;
+    private AirPlayEngine? _engine;
     private AudioStreamer? _streamer;
+    private bool _restoring;
     private FlyoutViewModel? _viewModel;
     private Forms.NotifyIcon? _trayIcon;
 
@@ -23,7 +23,7 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
-        // Two copies would both write into OwnTone's pipe and interleave the audio
+        // A second copy couldn't take the PTP ports the first one holds
         _singleInstance = new Mutex(true, "AirPlayTray.SingleInstance", out var isFirst);
         if (!isFirst)
         {
@@ -31,29 +31,27 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        _client = new OwnToneClient();
-        _streamer = new AudioStreamer(Distro, PipePath);
+        try
+        {
+            _engine = new AirPlayEngine(Environment.MachineName, new KeyStore(KeyStore.DefaultPath));
+        }
+        catch (SocketException)
+        {
+            System.Windows.MessageBox.Show(
+                "Another program is using the network ports AirPlay needs (UDP 319 and 320), " +
+                "usually another AirPlay sender. Close it and start AirPlay Tray again.",
+                "AirPlay", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Shutdown();
+            return;
+        }
+        _streamer = new AudioStreamer(_engine);
         _streamer.Start();
 
-        _viewModel = new FlyoutViewModel(_client, Distro);
+        _viewModel = new FlyoutViewModel(_engine);
 
-        // OwnTone doesn't always start the pipe by itself, e.g. when it boots while audio is
-        // already flowing, and a pause in the stream can leave it with no speakers selected
+        // Plays the remembered speakers once they are found, and again if they all dropped us
         var watchdog = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
-        watchdog.Tick += async (_, _) =>
-        {
-            try
-            {
-                if (!await _client.IsPlayingAsync())
-                    await _client.PlayPipeAsync(PipePath);
-
-                await RestoreSelectionAsync();
-            }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-            {
-                // OwnTone is still starting; try again on the next tick
-            }
-        };
+        watchdog.Tick += async (_, _) => await RestoreSelectionAsync();
         watchdog.Start();
         var flyout = new FlyoutWindow(_viewModel);
 
@@ -94,21 +92,28 @@ public partial class App : System.Windows.Application
         };
     }
 
-    // When nothing is selected but the user had speakers ticked, selects the ones OwnTone has
-    // found. Unticking everything in the flyout empties the remembered list, so that sticks.
+    // When nothing is playing but the user had speakers ticked, plays the ones that are on the
+    // network. Unticking everything in the flyout empties the remembered list, so that sticks.
     private async Task RestoreSelectionAsync()
     {
         var remembered = WindowsSettings.SelectedSpeakerIds;
-        if (remembered.Length == 0)
+        var speakers = _engine!.Speakers;
+        if (_restoring || remembered.Length == 0 || speakers.Any(s => _engine.IsPlaying(s.Id)))
             return;
 
-        var outputs = await _client!.GetOutputsAsync();
-        if (outputs.Any(o => o.Selected))
-            return;
-
-        var found = outputs.Where(o => remembered.Contains(o.Id)).Select(o => o.Id).ToArray();
-        if (found.Length > 0)
-            await _client.SelectOnlyAsync(found);
+        _restoring = true;
+        try
+        {
+            await Task.WhenAll(speakers.Where(s => remembered.Contains(s.Id)).Select(s =>
+            {
+                var setting = WindowsSettings.SpeakerSettingFor(s.Id);
+                return _engine.PlayAsync(s.Id, setting.Volume, setting.OffsetMs);
+            }));
+        }
+        finally
+        {
+            _restoring = false;
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -116,18 +121,10 @@ public partial class App : System.Windows.Application
         if (_trayIcon is not null)
             _trayIcon.Visible = false;
 
-        // Stop the speakers rather than leave them playing silence until WSL idles out
-        try
-        {
-            _client?.SelectOnlyAsync().Wait(TimeSpan.FromSeconds(2));
-        }
-        catch (AggregateException)
-        {
-        }
-
         _viewModel?.RestoreLocalSpeakers();
         _streamer?.Dispose();
-        _client?.Dispose();
+        // Tells each speaker the session is over, rather than leave it waiting for audio
+        _engine?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(3));
         _trayIcon?.Dispose();
         _singleInstance?.Dispose();
         base.OnExit(e);

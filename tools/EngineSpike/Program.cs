@@ -22,7 +22,7 @@ var target = rest.Length > 0 ? rest[0] : "Bedroom 2";
 Console.WriteLine("Looking for AirPlay speakers…");
 var speakers = await SpeakerBrowser.BrowseAsync(TimeSpan.FromSeconds(8));
 foreach (var s in speakers)
-    Console.WriteLine($"  {s.Name,-22} {s.Address,-15} :{s.Port,-5} {s.Manufacturer} {s.Model,-24} AP2 audio={s.SupportsAirPlay2Audio} PTP={s.SupportsPtp}");
+    Console.WriteLine($"  {s.Name,-22} {s.Id,-18} {s.Address,-15} :{s.Port,-5} {s.Manufacturer} {s.Model,-24} AP2 audio={s.SupportsAirPlay2Audio} PTP={s.SupportsPtp}");
 
 var speaker = speakers.FirstOrDefault(s => s.Name == target.Split(',')[0]);
 if (speaker is null)
@@ -92,63 +92,37 @@ if (mode == "tone")
 }
 else if (mode == "live")
 {
+    // Through the facade the app uses: its own discovery, play, and pacing
     var duration = TimeSpan.FromSeconds(rest.Length > 1 ? int.Parse(rest[1]) : 60);
-    await using var streamer = new AirPlayStreamer(clientId, "EngineSpike");
-    await streamer.AddSpeakerAsync(speaker, volumePercent: 25);
+    await using var engine = new AirPlayEngine("EngineSpike", keyStore);
+    while (engine.Speakers.All(s => s.Id != speaker.Id))
+        await Task.Delay(250);
+    var result = await engine.PlayAsync(speaker.Id, volume: 25, offsetMilliseconds: 0);
+    Console.WriteLine($"\n{speaker.Name}: {result}");
+    if (result != PlayResult.Playing)
+        return;
 
     // Loopback capture, converted to 44.1 kHz 16-bit stereo as the app does
     using var devices = new MMDeviceEnumerator();
     using var capture = new WasapiLoopbackCapture(devices.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia));
     var captured = new BufferedWaveProvider(capture.WaveFormat) { BufferDuration = TimeSpan.FromSeconds(1), DiscardOnBufferOverflow = true, ReadFully = false };
     var converted = new SampleToWaveProvider16(new WdlResamplingSampleProvider(new MultiplexingSampleProvider([captured.ToSampleProvider()], 2), AirPlayStreamer.SampleRate));
-    capture.DataAvailable += (_, e) => captured.AddSamples(e.Buffer, 0, e.BytesRecorded);
+    var bytes = new byte[4096];
+    capture.DataAvailable += (_, e) =>
+    {
+        captured.AddSamples(e.Buffer, 0, e.BytesRecorded);
+        int read;
+        while ((read = converted.Read(bytes, 0, bytes.Length)) > 0)
+            engine.Write(bytes.AsSpan(0, read));
+    };
     capture.StartRecording();
-    Console.WriteLine($"\nStreaming this PC's sound to {speaker.Name} for {duration.TotalSeconds:0} s");
+    Console.WriteLine($"Streaming this PC's sound to {speaker.Name} for {duration.TotalSeconds:0} s");
 
-    // Frames go out at the speaker's rate, paced by our clock. Capture arrives in bursts, so a
-    // short wait is allowed for it; past that, Windows is silent and silence fills the gap.
-    // If capture runs faster than our clock, the excess is dropped to keep the delay fixed.
-    var frameDuration = TimeSpan.FromSeconds((double)AlacFramer.SamplesPerFrame / AirPlayStreamer.SampleRate);
-    var waitForCapture = TimeSpan.FromMilliseconds(60);
-    var mostBuffered = TimeSpan.FromMilliseconds(120);
-    var frameBytes = new byte[AlacFramer.SamplesPerFrame * 4];
-    var frame = new short[AlacFramer.SamplesPerFrame * 2];
-    long framesSent = 0, silentFrames = 0, droppedFrames = 0;
     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-    var nextReport = TimeSpan.FromSeconds(10);
     while (stopwatch.Elapsed < duration)
     {
-        while (framesSent * frameDuration < stopwatch.Elapsed)
-        {
-            var behind = stopwatch.Elapsed - framesSent * frameDuration;
-            if (captured.BufferedDuration > frameDuration)
-            {
-                var read = converted.Read(frameBytes, 0, frameBytes.Length);
-                Array.Clear(frameBytes, read, frameBytes.Length - read);
-                if (captured.BufferedDuration > mostBuffered)
-                {
-                    droppedFrames++;
-                    continue;
-                }
-            }
-            else if (behind > waitForCapture)
-            {
-                Array.Clear(frameBytes);
-                silentFrames++;
-            }
-            else
-                break;
-
-            Buffer.BlockCopy(frameBytes, 0, frame, 0, frameBytes.Length);
-            streamer.Send(frame);
-            framesSent++;
-        }
-        if (stopwatch.Elapsed > nextReport)
-        {
-            Console.WriteLine($"  {stopwatch.Elapsed.TotalSeconds:0}s: {framesSent} frames, {silentFrames} silent, {droppedFrames} dropped; {streamer.Diagnostics}");
-            nextReport += TimeSpan.FromSeconds(10);
-        }
-        await Task.Delay(2);
+        await Task.Delay(TimeSpan.FromSeconds(10) < duration - stopwatch.Elapsed ? TimeSpan.FromSeconds(10) : duration - stopwatch.Elapsed);
+        Console.WriteLine($"  {stopwatch.Elapsed.TotalSeconds:0}s: playing {engine.IsPlaying(speaker.Id)}");
     }
     capture.StopRecording();
     await Task.Delay(TimeSpan.FromSeconds(2.5));

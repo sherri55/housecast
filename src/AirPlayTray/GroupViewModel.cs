@@ -8,15 +8,13 @@ namespace AirPlayTray;
 /// </summary>
 public sealed class GroupViewModel : INotifyPropertyChanged
 {
-    private readonly OwnToneClient _client;
-    private readonly Func<Task> _afterSelectionChanged;
+    private readonly Action _afterSelectionChanged;
     private IReadOnlyList<DeviceViewModel> _members = [];
-    // Shows the user's click straight away, until OwnTone's real state has been read back
+    // Shows the user's click straight away, until every member has started or stopped
     private bool? _pendingSelection;
 
-    public GroupViewModel(OwnToneClient client, WindowsSettings.SpeakerGroup group, Func<Task> afterSelectionChanged)
+    public GroupViewModel(WindowsSettings.SpeakerGroup group, Action afterSelectionChanged)
     {
-        _client = client;
         Group = group;
         _afterSelectionChanged = afterSelectionChanged;
     }
@@ -84,9 +82,8 @@ public sealed class GroupViewModel : INotifyPropertyChanged
     {
         try
         {
-            foreach (var member in _members)
-                await _client.SetSelectedAsync(member.Id, selected);
-            await _afterSelectionChanged();
+            await Task.WhenAll(_members.Select(m => m.SetPlayingAsync(selected)));
+            _afterSelectionChanged();
         }
         finally
         {

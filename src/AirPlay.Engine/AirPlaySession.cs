@@ -26,6 +26,8 @@ public sealed class AirPlaySession : IAsyncDisposable
     private readonly uint _sessionId = (uint)Random.Shared.NextInt64(1, uint.MaxValue);
     private readonly EventsChannel _events = new();
     private Timer? _keepalive;
+    private bool _ending;
+    private int _lost;
 
     public AirPlaySession(AirPlaySpeaker speaker, ulong clientId, string clientName)
     {
@@ -45,6 +47,12 @@ public sealed class AirPlaySession : IAsyncDisposable
     /// <summary>Where sync packets go.</summary>
     public IPEndPoint ControlEndPoint { get; private set; } = new(IPAddress.None, 0);
 
+    /// <summary>
+    /// Raised once if the speaker drops the session: it stopped answering, or another sender
+    /// took it over. The session is no use afterwards and should be disposed.
+    /// </summary>
+    public event Action<AirPlaySession>? Lost;
+
     private string SessionUrl => $"rtsp://{_rtsp.LocalEndPoint!.Address}/{_sessionId}";
 
     /// <summary>
@@ -54,11 +62,17 @@ public sealed class AirPlaySession : IAsyncDisposable
     /// <param name="ptpClockId">The clock this sender serves, which the speaker should follow.</param>
     /// <param name="addPtpPeer">Called with the speaker's timing address once it gives it.</param>
     /// <param name="localControlPort">Our UDP port for sync packets and resend requests.</param>
-    public async Task StartAsync(ulong ptpClockId, Action<IPAddress> addPtpPeer, int localControlPort, int volumePercent, CancellationToken cancellationToken = default)
+    /// <param name="pairing">Keys from an earlier PIN pairing, or null for transient pairing.</param>
+    /// <param name="pairingId">The identifier those keys were made with.</param>
+    /// <exception cref="PairingException">The speaker refused to pair, e.g. because it wants a PIN.</exception>
+    public async Task StartAsync(ulong ptpClockId, Action<IPAddress> addPtpPeer, int localControlPort, int volumePercent,
+        PairingKeys? pairing, string pairingId, CancellationToken cancellationToken = default)
     {
         await _rtsp.ConnectAsync(_speaker.Address, _speaker.Port, cancellationToken);
         await _rtsp.SendAsync("GET", "/info", cancellationToken: cancellationToken);
-        SharedSecret = await HomeKitPairing.PairTransientAsync(_rtsp, cancellationToken);
+        SharedSecret = pairing is null
+            ? await HomeKitPairing.PairTransientAsync(_rtsp, cancellationToken)
+            : await HomeKitPairing.VerifyAsync(_rtsp, pairing, pairingId, cancellationToken);
 
         var localAddress = _rtsp.LocalEndPoint!.Address;
         var timingPeer = new NSDictionary
@@ -88,9 +102,11 @@ public sealed class AirPlaySession : IAsyncDisposable
         if (eventPort == 0)
             throw new AirPlayException($"{_speaker.Name} gave no events port.");
         // Receivers don't all need the events connection, so a failure here isn't fatal
+        var eventsConnected = false;
         try
         {
             await _events.ConnectAsync(_speaker.Address, eventPort, SharedSecret, cancellationToken);
+            eventsConnected = true;
         }
         catch (Exception ex) when (ex is System.Net.Sockets.SocketException or IOException)
         {
@@ -133,10 +149,20 @@ public sealed class AirPlaySession : IAsyncDisposable
         if (DataEndPoint.Port == 0 || ControlEndPoint.Port == 0)
             throw new AirPlayException($"{_speaker.Name} gave no audio ports.");
 
-        // OwnTone sends volume last: some speakers ignore it if it comes earlier
-        await SetVolumeAsync(volumePercent, cancellationToken);
+        // OwnTone sends volume last: some speakers ignore it if it comes earlier. Samsung TVs
+        // refuse it with 500 and play anyway, so, as in OwnTone, a refusal doesn't end the session.
+        try
+        {
+            await SetVolumeAsync(volumePercent, cancellationToken);
+        }
+        catch (AirPlayException)
+        {
+        }
 
         _keepalive = new Timer(_ => _ = KeepAliveAsync(), null, TimeSpan.FromSeconds(25), TimeSpan.FromSeconds(25));
+        // The receiver closing its events channel ends the session
+        if (eventsConnected)
+            _ = _events.Closed.ContinueWith(_ => OnLost(), TaskScheduler.Default);
     }
 
     /// <summary>0–100, sent as OwnTone does: −30 dB to 0 dB in a straight line.</summary>
@@ -151,11 +177,24 @@ public sealed class AirPlaySession : IAsyncDisposable
     {
         try
         {
-            await _rtsp.SendAsync("POST", "/feedback");
+            if (!(await _rtsp.SendAsync("POST", "/feedback")).IsSuccess)
+                OnLost();
         }
-        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or ObjectDisposedException)
+        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException)
+        {
+            OnLost();
+        }
+        catch (ObjectDisposedException)
         {
         }
+    }
+
+    // Disposing closes the events channel too, which isn't a loss
+    private void OnLost()
+    {
+        if (_ending || _keepalive is null || Interlocked.Exchange(ref _lost, 1) == 1)
+            return;
+        Lost?.Invoke(this);
     }
 
     private async Task<NSDictionary> SendPlistAsync(string method, NSDictionary body, CancellationToken cancellationToken)
@@ -189,6 +228,7 @@ public sealed class AirPlaySession : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _ending = true;
         if (_keepalive is not null)
             await _keepalive.DisposeAsync();
         if (_rtsp.LocalEndPoint is not null)
