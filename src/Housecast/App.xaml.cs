@@ -15,8 +15,12 @@ namespace Housecast;
 public partial class App : System.Windows.Application
 {
     private const string RestartArgument = "--restart";
+    private const string QuitArgument = "--quit";
+    private const string SingleInstanceName = "Housecast.SingleInstance";
+    private const string QuitEventName = "Housecast.Quit";
 
     private Mutex? _singleInstance;
+    private EventWaitHandle? _quitRequested;
     private AirPlayEngine? _engine;
     private AudioStreamer? _streamer;
     private bool _restoring;
@@ -27,9 +31,17 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
+        // The uninstaller runs a copy with --quit so the running one lets go of its files
+        if (e.Args.Contains(QuitArgument))
+        {
+            QuitRunningCopy();
+            Shutdown();
+            return;
+        }
+
         // A second copy couldn't take the PTP ports the first one holds. A copy started by
         // Restart waits for the old one to quit instead.
-        _singleInstance = new Mutex(true, "Housecast.SingleInstance", out var isFirst);
+        _singleInstance = new Mutex(true, SingleInstanceName, out var isFirst);
         if (!isFirst && e.Args.Contains(RestartArgument))
             isFirst = WaitForPreviousCopy(_singleInstance);
         if (!isFirst)
@@ -37,6 +49,9 @@ public partial class App : System.Windows.Application
             Shutdown();
             return;
         }
+
+        _quitRequested = new EventWaitHandle(false, EventResetMode.AutoReset, QuitEventName);
+        ThreadPool.RegisterWaitForSingleObject(_quitRequested, (_, _) => Dispatcher.Invoke(() => Shutdown()), null, Timeout.Infinite, true);
 
         try
         {
@@ -150,6 +165,18 @@ public partial class App : System.Windows.Application
         }
     }
 
+    // Quits the running copy as its tray menu would, so it restores the PC's mute and tells its
+    // speakers, then waits for it to be gone
+    private static void QuitRunningCopy()
+    {
+        if (!EventWaitHandle.TryOpenExisting(QuitEventName, out var quitRequested))
+            return;
+        using (quitRequested)
+            quitRequested.Set();
+        using var singleInstance = new Mutex(false, SingleInstanceName);
+        WaitForPreviousCopy(singleInstance);
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
         if (_trayIcon is not null)
@@ -160,6 +187,7 @@ public partial class App : System.Windows.Application
         // Tells each speaker the session is over, rather than leave it waiting for audio
         _engine?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(3));
         _trayIcon?.Dispose();
+        _quitRequested?.Dispose();
         _singleInstance?.Dispose();
         base.OnExit(e);
     }

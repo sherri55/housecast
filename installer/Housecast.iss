@@ -64,6 +64,10 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""H
 Filename: "{app}\Housecast.exe"; Description: "Start Housecast"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
+; The running copy holds its files, and CloseApplications doesn't reach a tray app on uninstall.
+; --quit asks it to quit as its menu does; taskkill catches a copy that doesn't answer.
+Filename: "{app}\Housecast.exe"; Parameters: "--quit"; Flags: runhidden waituntilterminated; RunOnceId: "QuitHousecast"
+Filename: "{sys}\taskkill.exe"; Parameters: "/f /im Housecast.exe"; Flags: runhidden; RunOnceId: "KillHousecast"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Housecast"""; Flags: runhidden; RunOnceId: "RemoveFirewallRule"
 
 [UninstallDelete]
