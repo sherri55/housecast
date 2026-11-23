@@ -68,7 +68,7 @@ public sealed class AirPlayReceiver : IAsyncDisposable
     private async Task StartAsync(CancellationToken cancellationToken)
     {
         _listener.Start();
-        _acceptLoop = AcceptAsync(_stop.Token);
+        _acceptLoop = Task.Run(() => AcceptAsync(_stop.Token));
 
         var port = ((IPEndPoint)_listener.LocalEndpoint).Port;
         var host = $"{Environment.MachineName}.local";

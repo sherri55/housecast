@@ -25,7 +25,6 @@ internal sealed class BufferedAudioPlayer : IAsyncDisposable
     private readonly Action<ReceivedAudio> _play;
     private readonly Action<string> _log;
     private readonly SortedDictionary<uint, BufferedAudioPacket> _packets = [];
-    private readonly AacDecoder _decoder = new();
     private readonly CancellationTokenSource _stop = new();
     private readonly Task _loop;
     private Anchor? _anchor;
@@ -99,6 +98,9 @@ internal sealed class BufferedAudioPlayer : IAsyncDisposable
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(10));
         try
         {
+            // Windows' decoder belongs to the COM apartment that creates it. Made on the app's UI
+            // thread, every call from this loop was marshaled to that thread, and one crashed the app.
+            using var decoder = new AacDecoder();
             while (await timer.WaitForNextTickAsync(cancellationToken))
             {
                 foreach (var (packet, playAt) in TakeDue())
@@ -106,7 +108,7 @@ internal sealed class BufferedAudioPlayer : IAsyncDisposable
                     // A gap (a flush, a seek) means the decoder's history no longer applies
                     if (_lastSequence is { } last && packet.Sequence != last + 1)
                     {
-                        _decoder.Reset();
+                        decoder.Reset();
                         _decoding.Clear();
                     }
                     _lastSequence = packet.Sequence;
@@ -114,13 +116,13 @@ internal sealed class BufferedAudioPlayer : IAsyncDisposable
                     byte[] pcm;
                     try
                     {
-                        pcm = _decoder.Decode(packet.Aac);
+                        pcm = decoder.Decode(packet.Aac);
                     }
                     catch (COMException ex)
                     {
                         // Windows' decoder fails some frames around a skip; lose that frame, not the stream
                         _log($"  frame {packet.Sequence} didn't decode (0x{ex.HResult:X8}); skipped");
-                        _decoder.Reset();
+                        decoder.Reset();
                         _decoding.Clear();
                         continue;
                     }
@@ -185,7 +187,6 @@ internal sealed class BufferedAudioPlayer : IAsyncDisposable
     {
         _stop.Cancel();
         await _loop;
-        _decoder.Dispose();
         _stop.Dispose();
     }
 }

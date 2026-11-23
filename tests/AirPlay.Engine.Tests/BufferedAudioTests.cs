@@ -80,6 +80,36 @@ public class BufferedAudioTests
         Assert.True(played.Zip(played.Skip(1)).All(pair => pair.Second.RtpTime > pair.First.RtpTime));
     }
 
+    [Fact]
+    public async Task Playout_works_for_a_player_made_on_a_UI_thread()
+    {
+        const ulong iPhone = 0x6058_1234_5678_9ABC;
+        var follower = new PtpFollower();
+        var now = EngineClock.NowNanoseconds;
+        follower.Handle(PtpMessages.Sync(iPhone, 1), now);
+        follower.Handle(PtpMessages.FollowUp(iPhone, 1, now), now);
+
+        // A UI thread is single-threaded (STA); this one is gone by the time audio plays
+        var played = 0;
+        BufferedAudioPlayer? player = null;
+        var uiThread = new Thread(() => player = new BufferedAudioPlayer(follower, TimeSpan.Zero, _ => Interlocked.Increment(ref played), _ => { }));
+        uiThread.SetApartmentState(ApartmentState.STA);
+        uiThread.Start();
+        uiThread.Join();
+
+        await using (player!)
+        {
+            var frames = AacDecoderTests.Encode(AacDecoderTests.Tone(440, seconds: 1));
+            for (var i = 0; i < 10; i++)
+                player!.Add(new BufferedAudioPacket((uint)i, (uint)(1024 * i), frames[i]));
+            player!.SetAnchor(0, now + 100_000_000, iPhone);
+            player.SetRate(true);
+            await Task.Delay(600);
+        }
+
+        Assert.True(played > 0);
+    }
+
     private static byte[] Framed(byte[] key, uint sequence, uint rtpTime, byte[] aac)
     {
         var packet = new byte[12 + aac.Length + 16 + 8];
