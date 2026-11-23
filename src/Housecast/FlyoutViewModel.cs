@@ -3,7 +3,7 @@ using System.ComponentModel;
 using AirPlay.Engine;
 using NAudio.CoreAudioApi;
 
-namespace AirPlayTray;
+namespace Housecast;
 
 public sealed class FlyoutViewModel : INotifyPropertyChanged
 {
@@ -15,7 +15,7 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
     private readonly MMDevice _localDevice;
     private readonly AudioEndpointVolume _localSpeakers;
     private readonly bool _localWasMuted;
-    private string _status = "Looking for AirPlay devices…";
+    private string _status = "Looking for AirPlay speakers…";
 
     public FlyoutViewModel(AirPlayEngine engine)
     {
@@ -113,7 +113,7 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
                 existing.Update();
         }
 
-        Status = Devices.Count == 0 ? "Looking for AirPlay devices…" : "";
+        Status = Devices.Count == 0 ? "Looking for AirPlay speakers…" : "";
         // Covers speakers that left the network or dropped us without a click here
         OnPropertyChanged(nameof(NowPlaying));
 

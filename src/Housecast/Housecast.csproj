@@ -7,8 +7,12 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>AirPlayTray</RootNamespace>
-    <AssemblyName>AirPlayTray</AssemblyName>
+    <RootNamespace>Housecast</RootNamespace>
+    <AssemblyName>Housecast</AssemblyName>
+    <ApplicationIcon>Housecast.ico</ApplicationIcon>
+    <Product>Housecast</Product>
+    <Description>Plays this PC's sound on AirPlay speakers</Description>
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

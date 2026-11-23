@@ -1,7 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/AirPlay.Engine/AirPlay.Engine.csproj" />
-    <Project Path="src/AirPlayTray/AirPlayTray.csproj" />
+    <Project Path="src/Housecast/Housecast.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AirPlay.Engine.Tests/AirPlay.Engine.Tests.csproj" />

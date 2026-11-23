@@ -1,0 +1,41 @@
+# Builds and tests every push and pull request. A tag such as v1.2.0 also builds the
+# x64 and arm64 installers and attaches them to a GitHub release of that name.
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Test
+        run: dotnet test tests/AirPlay.Engine.Tests --nologo
+
+      - name: Build installers
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          ./build.ps1 -Version $version -Arch x64
+          ./build.ps1 -Version $version -Arch arm64
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release create '${{ github.ref_name }}' (Get-ChildItem dist/*.exe).FullName --title '${{ github.ref_name }}' --generate-notes

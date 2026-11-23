@@ -3,7 +3,7 @@ using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
-namespace AirPlayTray;
+namespace Housecast;
 
 /// <summary>
 /// Captures whatever Windows is playing and hands it to the AirPlay engine, which sends it

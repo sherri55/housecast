@@ -8,7 +8,7 @@ using AirPlay.Engine.Pairing;
 using Microsoft.Win32;
 using Forms = System.Windows.Forms;
 
-namespace AirPlayTray;
+namespace Housecast;
 
 public partial class App : System.Windows.Application
 {
@@ -24,7 +24,7 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
 
         // A second copy couldn't take the PTP ports the first one holds
-        _singleInstance = new Mutex(true, "AirPlayTray.SingleInstance", out var isFirst);
+        _singleInstance = new Mutex(true, "Housecast.SingleInstance", out var isFirst);
         if (!isFirst)
         {
             Shutdown();
@@ -33,14 +33,14 @@ public partial class App : System.Windows.Application
 
         try
         {
-            _engine = new AirPlayEngine(Environment.MachineName, new KeyStore(KeyStore.DefaultPath));
+            _engine = new AirPlayEngine(Environment.MachineName, new KeyStore(WindowsSettings.PairingsPath));
         }
         catch (SocketException)
         {
             System.Windows.MessageBox.Show(
-                "Another program is using the network ports AirPlay needs (UDP 319 and 320), " +
-                "usually another AirPlay sender. Close it and start AirPlay Tray again.",
-                "AirPlay", MessageBoxButton.OK, MessageBoxImage.Warning);
+                "Another program is using the network ports Housecast needs (UDP 319 and 320), " +
+                "usually another AirPlay sender. Close it and start Housecast again.",
+                "Housecast", MessageBoxButton.OK, MessageBoxImage.Warning);
             Shutdown();
             return;
         }
@@ -69,7 +69,7 @@ public partial class App : System.Windows.Application
         _trayIcon = new Forms.NotifyIcon
         {
             Icon = DrawTrayIcon(WindowsSettings.TaskbarUsesLightTheme),
-            Text = "AirPlay",
+            Text = "Housecast",
             ContextMenuStrip = menu,
             Visible = true,
         };
@@ -130,7 +130,7 @@ public partial class App : System.Windows.Application
         base.OnExit(e);
     }
 
-    // The AirPlay mark: a screen with a triangle rising into its bottom edge
+    // The Housecast mark: a house with sound waves rising inside it
     private static Icon DrawTrayIcon(bool lightTaskbar)
     {
         var color = lightTaskbar ? Color.FromArgb(0x1A, 0x1A, 0x1A) : Color.White;
@@ -138,10 +138,14 @@ public partial class App : System.Windows.Application
         using (var g = Graphics.FromImage(bitmap))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using var pen = new Pen(color, 2.5f) { LineJoin = LineJoin.Round };
-            g.DrawLines(pen, [new PointF(9, 22), new PointF(4, 22), new PointF(4, 5), new PointF(28, 5), new PointF(28, 22), new PointF(23, 22)]);
+            using var pen = new Pen(color, 2.5f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLines(pen, [new PointF(5, 15), new PointF(16, 5), new PointF(27, 15)]);
+            g.DrawLines(pen, [new PointF(8, 12.5f), new PointF(8, 27), new PointF(24, 27), new PointF(24, 12.5f)]);
+            using var wavePen = new Pen(color, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawArc(wavePen, 11.5f, 19.5f, 9, 9, 225, 90);
+            g.DrawArc(wavePen, 8, 16, 16, 16, 225, 90);
             using var brush = new SolidBrush(color);
-            g.FillPolygon(brush, [new PointF(16, 17), new PointF(24, 28), new PointF(8, 28)]);
+            g.FillEllipse(brush, 14.2f, 22.2f, 3.6f, 3.6f);
         }
         return Icon.FromHandle(bitmap.GetHicon());
     }

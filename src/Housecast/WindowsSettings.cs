@@ -1,8 +1,9 @@
+using System.IO;
 using System.Text.Json;
 using System.Windows.Media;
 using Microsoft.Win32;
 
-namespace AirPlayTray;
+namespace Housecast;
 
 /// <summary>
 /// Per-user settings kept in the registry: the Windows theme and accent colour the app follows,
@@ -13,8 +14,8 @@ public static class WindowsSettings
 {
     private const string PersonalizeKey = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string RunValueName = "AirPlayTray";
-    private const string AppKey = @"Software\AirPlayTray";
+    private const string RunValueName = "Housecast";
+    private const string AppKey = @"Software\Housecast";
 
     /// <summary>
     /// The Windows accent colour in the shade Windows 11 itself uses on a light or dark
@@ -113,6 +114,10 @@ public static class WindowsSettings
             key.SetValue(nameof(Groups), JsonSerializer.Serialize(value), RegistryValueKind.String);
         }
     }
+
+    /// <summary>The file the engine keeps its pairing keys in, encrypted for this Windows user.</summary>
+    public static string PairingsPath =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Housecast", "pairings.bin");
 
     public static bool StartsWithWindows
     {

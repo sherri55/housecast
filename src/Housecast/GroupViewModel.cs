@@ -1,6 +1,6 @@
 using System.ComponentModel;
 
-namespace AirPlayTray;
+namespace Housecast;
 
 /// <summary>
 /// A named set of speakers shown as one row: ticking it plays on all of them,

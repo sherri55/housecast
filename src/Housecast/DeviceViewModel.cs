@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 using AirPlay.Engine;
 using AirPlay.Engine.Discovery;
 
-namespace AirPlayTray;
+namespace Housecast;
 
 public sealed class DeviceViewModel : INotifyPropertyChanged
 {

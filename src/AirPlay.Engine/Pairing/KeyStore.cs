@@ -21,12 +21,6 @@ public sealed class KeyStore
     }
 
     /// <summary>
-    /// The default file: %APPDATA%\AirPlayTray\pairings.bin.
-    /// </summary>
-    public static string DefaultPath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AirPlayTray", "pairings.bin");
-
-    /// <summary>
     /// Our identifier in pairings: 16 hex digits, created once and kept, because receivers
     /// remember pairings against it.
     /// </summary>

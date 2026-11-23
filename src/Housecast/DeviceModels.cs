@@ -1,4 +1,4 @@
-namespace AirPlayTray;
+namespace Housecast;
 
 /// <summary>
 /// What each AirPlay device says it is, from the model and maker in its network announcement.
