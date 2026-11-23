@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
 using System.Net.Sockets;
 using System.Windows;
 using System.Windows.Threading;
@@ -12,6 +14,8 @@ namespace Housecast;
 
 public partial class App : System.Windows.Application
 {
+    private const string RestartArgument = "--restart";
+
     private Mutex? _singleInstance;
     private AirPlayEngine? _engine;
     private AudioStreamer? _streamer;
@@ -23,8 +27,11 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
-        // A second copy couldn't take the PTP ports the first one holds
+        // A second copy couldn't take the PTP ports the first one holds. A copy started by
+        // Restart waits for the old one to quit instead.
         _singleInstance = new Mutex(true, "Housecast.SingleInstance", out var isFirst);
+        if (!isFirst && e.Args.Contains(RestartArgument))
+            isFirst = WaitForPreviousCopy(_singleInstance);
         if (!isFirst)
         {
             Shutdown();
@@ -64,6 +71,20 @@ public partial class App : System.Windows.Application
 
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add(startWithWindows);
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("Restart", null, (_, _) =>
+        {
+            Process.Start(Environment.ProcessPath!, RestartArgument);
+            Shutdown();
+        });
+        // Only an installed copy has Inno Setup's uninstaller beside it
+        var uninstaller = Path.Combine(AppContext.BaseDirectory, "unins000.exe");
+        if (File.Exists(uninstaller))
+        {
+            // The uninstaller asks to confirm, then closes this copy itself
+            menu.Items.Add("Uninstall Housecast", null, (_, _) =>
+                Process.Start(new ProcessStartInfo(uninstaller) { UseShellExecute = true }));
+        }
         menu.Items.Add("Quit", null, (_, _) => Shutdown());
 
         _trayIcon = new Forms.NotifyIcon
@@ -113,6 +134,19 @@ public partial class App : System.Windows.Application
         finally
         {
             _restoring = false;
+        }
+    }
+
+    // The old copy disposes the mutex without releasing it, so it comes back abandoned: ours all the same
+    private static bool WaitForPreviousCopy(Mutex singleInstance)
+    {
+        try
+        {
+            return singleInstance.WaitOne(TimeSpan.FromSeconds(10));
+        }
+        catch (AbandonedMutexException)
+        {
+            return true;
         }
     }
 
