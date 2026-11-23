@@ -56,7 +56,7 @@ public sealed class AirPlayStreamer : IAsyncDisposable
     {
         public AirPlaySession Session { get; } = session;
         public ChaCha20Poly1305 AudioKey { get; } = new(session.SharedSecret[..32]);
-        public int OffsetSamples { get; } = offsetSamples;
+        public int OffsetSamples { get; set; } = offsetSamples;
         public Dictionary<ushort, byte[]> Sent { get; } = [];
         public bool Started { get; set; }
         public uint SamplesSinceSync { get; set; }
@@ -96,6 +96,22 @@ public sealed class AirPlayStreamer : IAsyncDisposable
         _ptp.RemovePeer(session.Speaker.Address);
         target.AudioKey.Dispose();
         await session.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Moves a speaker later (positive) or earlier (negative) than the rest while it plays.
+    /// The next sync packet, sent with the next frame, tells the speaker.
+    /// </summary>
+    public void SetOffset(AirPlaySession session, int offsetMilliseconds)
+    {
+        lock (_targets)
+        {
+            var target = _targets.FirstOrDefault(t => t.Session == session);
+            if (target is null)
+                return;
+            target.OffsetSamples = offsetMilliseconds * SampleRate / 1000;
+            target.SamplesSinceSync = SyncEverySamples;
+        }
     }
 
     /// <summary>
