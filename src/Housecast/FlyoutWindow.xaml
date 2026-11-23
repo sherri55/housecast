@@ -101,6 +101,24 @@
             <Setter Property="Margin" Value="0,0,10,0" />
             <Setter Property="Background" Value="{DynamicResource Accent}" />
         </Style>
+        <!-- The group badge with its icon: two speakers, one behind the other -->
+        <Style x:Key="GroupBadgeIcon" TargetType="ContentControl">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ContentControl">
+                        <Border Style="{StaticResource GroupBadge}">
+                            <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock Text="{x:Static local:DeviceModels.SpeakerIcon}" FontFamily="Segoe Fluent Icons" FontSize="12"
+                                           Foreground="{DynamicResource Surface}" Opacity="0.6" Margin="0,0,5,5" />
+                                <TextBlock Text="{x:Static local:DeviceModels.SpeakerIcon}" FontFamily="Segoe Fluent Icons" FontSize="12"
+                                           Foreground="{DynamicResource Surface}" Margin="5,5,0,0" />
+                            </Grid>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <!-- One of a group's speakers on its card: filled while it plays, outlined when it doesn't -->
         <Style x:Key="MemberPill" TargetType="Border">
             <Setter Property="CornerRadius" Value="12" />
@@ -389,10 +407,7 @@
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
                                                 <StackPanel Orientation="Horizontal">
-                                                    <Border Style="{StaticResource GroupBadge}">
-                                                        <TextBlock Text="{Binding Icon}" FontFamily="Segoe Fluent Icons" FontSize="14"
-                                                                   Foreground="{DynamicResource Surface}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                                    </Border>
+                                                    <ContentControl Style="{StaticResource GroupBadgeIcon}" />
                                                     <StackPanel VerticalAlignment="Center">
                                                         <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
                                                         <TextBlock Text="{Binding Description}" FontSize="11" Foreground="{DynamicResource SubtleText}"
@@ -536,10 +551,7 @@
                             Visibility="{Binding IsEditingGroup, Converter={StaticResource Visible}}">
                         <StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                                <Border Style="{StaticResource GroupBadge}">
-                                    <TextBlock Text="{x:Static local:DeviceModels.GroupIcon}" FontFamily="Segoe Fluent Icons" FontSize="14"
-                                               Foreground="{DynamicResource Surface}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                </Border>
+                                <ContentControl Style="{StaticResource GroupBadgeIcon}" />
                                 <TextBlock Text="{Binding GroupEditorTitle}" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
                             </StackPanel>
 

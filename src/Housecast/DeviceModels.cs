@@ -16,7 +16,6 @@ public static class DeviceModels
     public const string HomeTheaterIcon = "\uE7F3";
     public const string ReceiverIcon = "\uE8D6";
     public const string ComputerIcon = "\uE977";
-    public const string GroupIcon = "\uE80F";
 
     /// <summary>
     /// The icon and description for a device, from the model and maker it announces.

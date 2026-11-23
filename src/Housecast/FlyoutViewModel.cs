@@ -16,6 +16,8 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
     private readonly AudioEndpointVolume _localSpeakers;
     private readonly bool _localWasMuted;
     private string _status = "Looking for AirPlay speakers…";
+    // Groups a phone or Mac is playing to, and its name
+    private readonly Dictionary<string, string> _groupSenders = [];
 
     public FlyoutViewModel(AirPlayEngine engine)
     {
@@ -25,6 +27,14 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
         _localDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
         _localSpeakers = _localDevice.AudioEndpointVolume;
         _localWasMuted = _localSpeakers.Mute;
+        _engine.GroupPlaybackChanged += (group, sender) => System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
+        {
+            if (sender is null)
+                _groupSenders.Remove(group);
+            else
+                _groupSenders[group] = sender;
+            Refresh();
+        });
         LoadGroups();
     }
 
@@ -74,6 +84,11 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
     {
         get
         {
+            if (_groupSenders.Count > 0)
+            {
+                var (group, sender) = _groupSenders.First();
+                return $"{group} is playing from {sender}";
+            }
             var names = Devices.Where(d => d.IsSelected).Select(d => d.Name).ToList();
             return names.Count switch
             {
@@ -231,6 +246,13 @@ public sealed class FlyoutViewModel : INotifyPropertyChanged
             Groups.Add(model);
         }
         OnPropertyChanged(nameof(HasGroups));
+
+        // Each group is also an AirPlay speaker phones and Macs can play to
+        _ = _engine.PublishGroupsAsync(WindowsSettings.Groups.Select(g => new AirPlayGroup(g.Name, g.SpeakerIds.Select(id =>
+        {
+            var setting = WindowsSettings.SpeakerSettingFor(id);
+            return new GroupMember(id, setting.Volume, setting.OffsetMs);
+        }).ToList())).ToList());
     }
 
     /// <summary>

@@ -23,7 +23,6 @@ public sealed class GroupViewModel : INotifyPropertyChanged
 
     public WindowsSettings.SpeakerGroup Group { get; }
     public string Name => Group.Name;
-    public string Icon => DeviceModels.GroupIcon;
 
     public string Description => _members.Count switch
     {
