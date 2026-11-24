@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Runtime.InteropServices;
 
@@ -17,7 +18,8 @@ internal static class WindowsDnsSd
     public static async Task<IReadOnlyList<string>> BrowseAsync(string serviceType, TimeSpan scanTime, CancellationToken cancellationToken)
     {
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var context = GCHandle.Alloc(names);
+        var context = Track(names);
+        var cancel = AllocateCancel();
         try
         {
             var request = new BrowseRequest
@@ -25,10 +27,9 @@ internal static class WindowsDnsSd
                 Version = QueryRequestVersion1,
                 QueryName = serviceType,
                 Callback = BrowseCallbackDelegate,
-                QueryContext = GCHandle.ToIntPtr(context),
+                QueryContext = context,
             };
-            var cancel = new ServiceCancel();
-            var status = DnsServiceBrowse(ref request, ref cancel);
+            var status = DnsServiceBrowse(ref request, cancel);
             if (status != RequestPending)
                 throw new InvalidOperationException($"DnsServiceBrowse failed with status {status}.");
 
@@ -38,7 +39,7 @@ internal static class WindowsDnsSd
             }
             finally
             {
-                DnsServiceBrowseCancel(ref cancel);
+                DnsServiceBrowseCancel(cancel);
             }
 
             lock (names)
@@ -46,7 +47,8 @@ internal static class WindowsDnsSd
         }
         finally
         {
-            context.Free();
+            Pending.TryRemove(context, out _);
+            Marshal.FreeHGlobal(cancel);
         }
     }
 
@@ -56,7 +58,8 @@ internal static class WindowsDnsSd
     public static async Task<ServiceInstance?> ResolveAsync(string instanceName, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var completion = new TaskCompletionSource<ServiceInstance?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var context = GCHandle.Alloc(completion);
+        var context = Track(completion);
+        var cancel = AllocateCancel();
         var namePointer = Marshal.StringToHGlobalUni(instanceName);
         try
         {
@@ -65,25 +68,22 @@ internal static class WindowsDnsSd
                 Version = QueryRequestVersion1,
                 QueryName = namePointer,
                 Callback = ResolveCallbackDelegate,
-                QueryContext = GCHandle.ToIntPtr(context),
+                QueryContext = context,
             };
-            var cancel = new ServiceCancel();
-            var status = DnsServiceResolve(ref request, ref cancel);
+            var status = DnsServiceResolve(ref request, cancel);
             if (status != RequestPending)
                 return null;
 
             var finished = await Task.WhenAny(completion.Task, Task.Delay(timeout, cancellationToken));
-            if (finished != completion.Task)
-            {
-                DnsServiceResolveCancel(ref cancel);
-                return null;
-            }
-            return await completion.Task;
+            // Even an answered resolve keeps listening, on a thread of its own, until it's cancelled
+            DnsServiceResolveCancel(cancel);
+            return finished == completion.Task ? await completion.Task : null;
         }
         finally
         {
+            Pending.TryRemove(context, out _);
+            Marshal.FreeHGlobal(cancel);
             Marshal.FreeHGlobal(namePointer);
-            context.Free();
         }
     }
 
@@ -114,26 +114,31 @@ internal static class WindowsDnsSd
             throw new InvalidOperationException($"Couldn't describe {instanceName} for DNS-SD.");
 
         var completion = new TaskCompletionSource<uint>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var context = GCHandle.Alloc(completion);
+        var context = Track(completion);
         var request = new RegisterRequest
         {
             Version = QueryRequestVersion1,
             ServiceInstance = instance,
             Callback = RegisterCallbackDelegate,
-            QueryContext = GCHandle.ToIntPtr(context),
+            QueryContext = context,
         };
-        var cancel = new ServiceCancel();
-        var status = DnsServiceRegister(ref request, ref cancel);
-        if (status != RequestPending)
+        uint status;
+        try
         {
-            context.Free();
-            DnsServiceFreeInstance(instance);
-            throw new InvalidOperationException($"DnsServiceRegister failed with status {status}.");
-        }
+            status = DnsServiceRegister(ref request, IntPtr.Zero);
+            if (status != RequestPending)
+            {
+                DnsServiceFreeInstance(instance);
+                throw new InvalidOperationException($"DnsServiceRegister failed with status {status}.");
+            }
 
-        using (cancellationToken.Register(() => completion.TrySetCanceled()))
-            status = await completion.Task;
-        context.Free();
+            using (cancellationToken.Register(() => completion.TrySetCanceled()))
+                status = await completion.Task;
+        }
+        finally
+        {
+            Pending.TryRemove(context, out _);
+        }
         if (status != 0)
         {
             DnsServiceFreeInstance(instance);
@@ -150,24 +155,29 @@ internal static class WindowsDnsSd
         {
             if (_instance == IntPtr.Zero)
                 return;
-            // Windows reports the result through the callback; there's nothing to wait for
+            var completion = new TaskCompletionSource<uint>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var context = Track(completion);
             var request = new RegisterRequest
             {
                 Version = QueryRequestVersion1,
                 ServiceInstance = _instance,
-                Callback = DeregisterCallbackDelegate,
+                Callback = RegisterCallbackDelegate,
+                QueryContext = context,
             };
-            var cancel = new ServiceCancel();
-            DnsServiceDeRegister(ref request, ref cancel);
-            DnsServiceFreeInstance(_instance);
+            // Windows goes on reading the instance until it reports the deregistration, so it's freed
+            // only after that; one that never reports is left allocated rather than freed under Windows
+            var pending = DnsServiceDeRegister(ref request, IntPtr.Zero) == RequestPending;
+            if (!pending || completion.Task.Wait(TimeSpan.FromSeconds(2)))
+                DnsServiceFreeInstance(_instance);
+            Pending.TryRemove(context, out _);
             _instance = IntPtr.Zero;
         }
     }
 
     private static void OnRegistered(uint status, IntPtr queryContext, IntPtr instance)
     {
-        if (queryContext != IntPtr.Zero)
-            ((TaskCompletionSource<uint>)GCHandle.FromIntPtr(queryContext).Target!).TrySetResult(status);
+        if (Pending.TryGetValue(queryContext, out var state))
+            ((TaskCompletionSource<uint>)state).TrySetResult(status);
     }
 
     private static void OnBrowse(uint status, IntPtr queryContext, IntPtr records)
@@ -175,23 +185,33 @@ internal static class WindowsDnsSd
         if (records == IntPtr.Zero)
             return;
 
-        var names = (HashSet<string>)GCHandle.FromIntPtr(queryContext).Target!;
-        for (var record = records; record != IntPtr.Zero; record = Marshal.ReadIntPtr(record))
+        if (Pending.TryGetValue(queryContext, out var state))
         {
-            // DNS_RECORDW: pNext, pName, wType, wDataLength, Flags, dwTtl, dwReserved, then the data union
-            if ((ushort)Marshal.ReadInt16(record, 2 * IntPtr.Size) != PtrRecordType)
-                continue;
-            var target = Marshal.PtrToStringUni(Marshal.ReadIntPtr(record, RecordDataOffset));
-            if (target is not null)
-                lock (names)
-                    names.Add(target);
+            var names = (HashSet<string>)state;
+            for (var record = records; record != IntPtr.Zero; record = Marshal.ReadIntPtr(record))
+            {
+                // DNS_RECORDW: pNext, pName, wType, wDataLength, Flags, dwTtl, dwReserved, then the data union
+                if ((ushort)Marshal.ReadInt16(record, 2 * IntPtr.Size) != PtrRecordType)
+                    continue;
+                var target = Marshal.PtrToStringUni(Marshal.ReadIntPtr(record, RecordDataOffset));
+                if (target is not null)
+                    lock (names)
+                        names.Add(target);
+            }
         }
         DnsRecordListFree(records, FreeRecordList);
     }
 
     private static void OnResolve(uint status, IntPtr queryContext, IntPtr instancePointer)
     {
-        var completion = (TaskCompletionSource<ServiceInstance?>)GCHandle.FromIntPtr(queryContext).Target!;
+        if (!Pending.TryGetValue(queryContext, out var state))
+        {
+            if (instancePointer != IntPtr.Zero)
+                DnsServiceFreeInstance(instancePointer);
+            return;
+        }
+
+        var completion = (TaskCompletionSource<ServiceInstance?>)state;
         if (instancePointer == IntPtr.Zero)
         {
             completion.TrySetResult(null);
@@ -217,11 +237,32 @@ internal static class WindowsDnsSd
         DnsServiceFreeInstance(instancePointer);
     }
 
+    // Windows calls back on its own threads, and can call after a timeout or cancel has ended the
+    // operation. Callbacks find their operation here by number and ignore one that has ended.
+    private static readonly ConcurrentDictionary<IntPtr, object> Pending = new();
+    private static long _lastContext;
+
+    private static IntPtr Track(object operation)
+    {
+        var context = (IntPtr)Interlocked.Increment(ref _lastContext);
+        Pending[context] = operation;
+        return context;
+    }
+
+    // Windows keeps the cancel handle's address and writes to it after the call returns, so it must
+    // live in unmanaged memory: a managed one moves with the garbage collector and Windows' writes
+    // then corrupt whatever took its place
+    private static IntPtr AllocateCancel()
+    {
+        var cancel = Marshal.AllocHGlobal(IntPtr.Size);
+        Marshal.WriteIntPtr(cancel, IntPtr.Zero);
+        return cancel;
+    }
+
     // Held in static fields so the garbage collector can't free them while Windows still calls them
     private static readonly BrowseCallback BrowseCallbackDelegate = OnBrowse;
     private static readonly ResolveCallback ResolveCallbackDelegate = OnResolve;
     private static readonly RegisterCallback RegisterCallbackDelegate = OnRegistered;
-    private static readonly RegisterCallback DeregisterCallbackDelegate = (_, _, _) => { };
 
     private const uint QueryRequestVersion1 = 1;
     private const int RequestPending = 9506;
@@ -272,12 +313,6 @@ internal static class WindowsDnsSd
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct ServiceCancel
-    {
-        public IntPtr Reserved;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct ServiceInstanceNative
     {
         public IntPtr InstanceName;
@@ -294,16 +329,16 @@ internal static class WindowsDnsSd
     }
 
     [DllImport("dnsapi.dll")]
-    private static extern int DnsServiceBrowse(ref BrowseRequest request, ref ServiceCancel cancel);
+    private static extern int DnsServiceBrowse(ref BrowseRequest request, IntPtr cancel);
 
     [DllImport("dnsapi.dll")]
-    private static extern int DnsServiceBrowseCancel(ref ServiceCancel cancel);
+    private static extern int DnsServiceBrowseCancel(IntPtr cancel);
 
     [DllImport("dnsapi.dll")]
-    private static extern int DnsServiceResolve(ref ResolveRequest request, ref ServiceCancel cancel);
+    private static extern int DnsServiceResolve(ref ResolveRequest request, IntPtr cancel);
 
     [DllImport("dnsapi.dll")]
-    private static extern int DnsServiceResolveCancel(ref ServiceCancel cancel);
+    private static extern int DnsServiceResolveCancel(IntPtr cancel);
 
     [DllImport("dnsapi.dll")]
     private static extern void DnsServiceFreeInstance(IntPtr instance);
@@ -313,10 +348,10 @@ internal static class WindowsDnsSd
         ushort port, ushort priority, ushort weight, uint propertiesCount, IntPtr[] keys, IntPtr[] values);
 
     [DllImport("dnsapi.dll")]
-    private static extern uint DnsServiceRegister(ref RegisterRequest request, ref ServiceCancel cancel);
+    private static extern uint DnsServiceRegister(ref RegisterRequest request, IntPtr cancel);
 
     [DllImport("dnsapi.dll")]
-    private static extern uint DnsServiceDeRegister(ref RegisterRequest request, ref ServiceCancel cancel);
+    private static extern uint DnsServiceDeRegister(ref RegisterRequest request, IntPtr cancel);
 
     [DllImport("dnsapi.dll")]
     private static extern void DnsRecordListFree(IntPtr records, int freeType);
