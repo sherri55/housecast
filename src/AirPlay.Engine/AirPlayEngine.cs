@@ -144,15 +144,18 @@ public sealed class AirPlayEngine : IAsyncDisposable
     private async Task PublishAsync(IReadOnlyList<AirPlayGroup> groups)
     {
         var stale = new List<Relay>();
+        var kept = new List<Relay>();
         var added = new List<AirPlayGroup>();
         lock (_lock)
         {
             foreach (var (name, relay) in _relays.ToList())
             {
-                var wanted = groups.FirstOrDefault(g => g.Name == name);
-                if (wanted is not null && wanted.Members.Select(m => m.SpeakerId).SequenceEqual(relay.Group.Members.Select(m => m.SpeakerId)))
+                // The name is the speaker senders see, so a group keeps its receiver, and any
+                // sender playing to it, while its speakers change
+                if (groups.FirstOrDefault(g => g.Name == name) is { } wanted)
                 {
                     relay.Group = wanted;
+                    kept.Add(relay);
                     continue;
                 }
                 _relays.Remove(name);
@@ -163,6 +166,8 @@ public sealed class AirPlayEngine : IAsyncDisposable
 
         foreach (var relay in stale)
             await CloseRelayAsync(relay);
+        foreach (var relay in kept)
+            await RefreshRelayAsync(relay);
         foreach (var group in added)
         {
             AirPlayReceiver receiver;
@@ -370,35 +375,77 @@ public sealed class AirPlayEngine : IAsyncDisposable
         try
         {
             relay.Sender = sender;
-            var joining = new List<(GroupMember Member, AirPlaySpeaker Speaker)>();
-            var leaving = new List<AirPlaySession>();
-            lock (_lock)
-            {
-                foreach (var member in relay.Group.Members)
-                {
-                    if (relay.Members.ContainsKey(member.SpeakerId) || HeldBy(member.SpeakerId) is not null
-                        || _seen.GetValueOrDefault(member.SpeakerId).Speaker is not { } speaker)
-                        continue;
-                    if (_playing.Remove(member.SpeakerId, out var playing))
-                    {
-                        playing.Session.Lost -= OnLost;
-                        leaving.Add(playing.Session);
-                        relay.GiveBack[member.SpeakerId] = (playing.Volume, playing.OffsetMilliseconds);
-                    }
-                    joining.Add((member, speaker));
-                }
-            }
-
-            // Off the PC's stream first, so each speaker follows one stream at a time
-            foreach (var session in leaving)
-                await _streamer.RemoveSpeakerAsync(session);
-            await Task.WhenAll(joining.Select(j => JoinRelayAsync(relay, j.Member, j.Speaker)));
+            await FollowGroupAsync(relay);
         }
         finally
         {
             relay.Busy.Release();
         }
         GroupPlaybackChanged?.Invoke(relay.Group.Name, sender);
+    }
+
+    // While a sender plays to the group: speakers added to it, or back on the network, join;
+    // speakers taken out of it go back to what they played before
+    private async Task RefreshRelayAsync(Relay relay)
+    {
+        string? sender;
+        await relay.Busy.WaitAsync();
+        try
+        {
+            sender = relay.Sender;
+            if (sender is null || !await FollowGroupAsync(relay))
+                return;
+        }
+        finally
+        {
+            relay.Busy.Release();
+        }
+        GroupPlaybackChanged?.Invoke(relay.Group.Name, sender);
+    }
+
+    // Moves speakers so that the group's members on the network play the sender; call holding
+    // relay.Busy. Returns whether any speaker moved.
+    private async Task<bool> FollowGroupAsync(Relay relay)
+    {
+        var joining = new List<(GroupMember Member, AirPlaySpeaker Speaker)>();
+        var offPcStream = new List<AirPlaySession>();
+        var removed = new List<AirPlaySession>();
+        var giveBack = new List<(string SpeakerId, int Volume, int OffsetMilliseconds)>();
+        lock (_lock)
+        {
+            var memberIds = relay.Group.Members.Select(m => m.SpeakerId).ToHashSet();
+            foreach (var speakerId in relay.Members.Keys.Union(relay.GiveBack.Keys).Where(id => !memberIds.Contains(id)).ToList())
+            {
+                if (relay.Members.Remove(speakerId, out var member))
+                    removed.Add(member.Session);
+                if (relay.GiveBack.Remove(speakerId, out var before))
+                    giveBack.Add((speakerId, before.Volume, before.OffsetMilliseconds));
+            }
+
+            foreach (var member in relay.Group.Members)
+            {
+                if (relay.Members.ContainsKey(member.SpeakerId) || HeldBy(member.SpeakerId) is not null
+                    || _seen.GetValueOrDefault(member.SpeakerId).Speaker is not { } speaker)
+                    continue;
+                if (_playing.Remove(member.SpeakerId, out var playing))
+                {
+                    playing.Session.Lost -= OnLost;
+                    offPcStream.Add(playing.Session);
+                    relay.GiveBack[member.SpeakerId] = (playing.Volume, playing.OffsetMilliseconds);
+                }
+                joining.Add((member, speaker));
+            }
+        }
+
+        // Off one stream before joining the other, so each speaker follows one stream at a time
+        foreach (var session in removed)
+            await relay.Streamer.RemoveSpeakerAsync(session);
+        foreach (var (speakerId, volume, offset) in giveBack)
+            await PlayAsync(speakerId, volume, offset);
+        foreach (var session in offPcStream)
+            await _streamer.RemoveSpeakerAsync(session);
+        await Task.WhenAll(joining.Select(j => JoinRelayAsync(relay, j.Member, j.Speaker)));
+        return removed.Count + giveBack.Count + joining.Count > 0;
     }
 
     private async Task JoinRelayAsync(Relay relay, GroupMember member, AirPlaySpeaker speaker)
@@ -526,6 +573,7 @@ public sealed class AirPlayEngine : IAsyncDisposable
             {
                 var found = await SpeakerBrowser.BrowseAsync(ScanTime, cancellationToken);
                 var now = DateTime.UtcNow;
+                List<Relay> relays;
                 lock (_lock)
                 {
                     // Only speakers this engine can play to: AirPlay 2 audio timed by PTP
@@ -533,7 +581,10 @@ public sealed class AirPlayEngine : IAsyncDisposable
                         _seen[speaker.Id] = (speaker, now);
                     foreach (var gone in _seen.Where(s => now - s.Value.LastSeen > ForgetAfter && !_playing.ContainsKey(s.Key)).ToList())
                         _seen.Remove(gone.Key);
+                    relays = _relays.Values.ToList();
                 }
+                foreach (var relay in relays)
+                    await RefreshRelayAsync(relay);
             }
             catch (OperationCanceledException)
             {
