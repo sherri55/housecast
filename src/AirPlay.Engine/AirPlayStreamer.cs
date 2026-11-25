@@ -162,28 +162,28 @@ public sealed class AirPlayStreamer : IAsyncDisposable
     {
         var frame = AlacFramer.Encode(interleavedFrame);
 
-        Target[] targets;
+        // Held while sending, so RemoveSpeakerAsync can't dispose a key that's still in use
         lock (_targets)
-            targets = _targets.ToArray();
-
-        foreach (var target in targets)
         {
-            var starting = !target.Started;
-            if (starting || target.SamplesSinceSync >= SyncEverySamples)
+            foreach (var target in _targets)
             {
-                SendSync(target, playAtNanoseconds, first: starting);
-                target.SamplesSinceSync = 0;
-                target.Started = true;
-            }
+                var starting = !target.Started;
+                if (starting || target.SamplesSinceSync >= SyncEverySamples)
+                {
+                    SendSync(target, playAtNanoseconds, first: starting);
+                    target.SamplesSinceSync = 0;
+                    target.Started = true;
+                }
 
-            var packet = RtpPackets.Audio(target.AudioKey, _sequence, _rtpTime, frame, marker: starting);
-            _data.Send(packet, target.Session.DataEndPoint);
-            lock (target.Sent)
-            {
-                target.Sent[_sequence] = packet;
-                target.Sent.Remove((ushort)(_sequence - ResendHistory));
+                var packet = RtpPackets.Audio(target.AudioKey, _sequence, _rtpTime, frame, marker: starting);
+                _data.Send(packet, target.Session.DataEndPoint);
+                lock (target.Sent)
+                {
+                    target.Sent[_sequence] = packet;
+                    target.Sent.Remove((ushort)(_sequence - ResendHistory));
+                }
+                target.SamplesSinceSync += AlacFramer.SamplesPerFrame;
             }
-            target.SamplesSinceSync += AlacFramer.SamplesPerFrame;
         }
 
         _sequence++;
