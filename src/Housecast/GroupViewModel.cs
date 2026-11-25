@@ -4,7 +4,7 @@ namespace Housecast;
 
 /// <summary>
 /// A named set of speakers shown as one row: ticking it plays on all of them,
-/// and its volume sets them all at once.
+/// and its volume and delay set them all at once.
 /// </summary>
 public sealed class GroupViewModel : INotifyPropertyChanged
 {
@@ -66,6 +66,21 @@ public sealed class GroupViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
+    /// The members' average delay. Setting it moves every member by the same amount, so the
+    /// delays that line the speakers up with each other are kept.
+    /// </summary>
+    public int OffsetMs
+    {
+        get => _members.Count == 0 ? 0 : (int)Math.Round(_members.Average(m => m.OffsetMs));
+        set
+        {
+            var shift = value - OffsetMs;
+            foreach (var member in _members)
+                member.OffsetMs = Math.Clamp(member.OffsetMs + shift, -2000, 2000);
+        }
+    }
+
+    /// <summary>
     /// Points the group at the speakers currently on the network.
     /// </summary>
     public void SetMembers(IEnumerable<DeviceViewModel> members)
@@ -80,6 +95,7 @@ public sealed class GroupViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(Members));
         OnPropertyChanged(nameof(IsSelected));
         OnPropertyChanged(nameof(Volume));
+        OnPropertyChanged(nameof(OffsetMs));
         OnPropertyChanged(nameof(HasVolume));
     }
 
@@ -99,7 +115,8 @@ public sealed class GroupViewModel : INotifyPropertyChanged
 
     private void OnMemberChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(DeviceViewModel.IsSelected) or nameof(DeviceViewModel.Volume) or nameof(DeviceViewModel.HasVolume))
+        if (e.PropertyName is nameof(DeviceViewModel.IsSelected) or nameof(DeviceViewModel.Volume) or nameof(DeviceViewModel.OffsetMs)
+            or nameof(DeviceViewModel.HasVolume))
             OnPropertyChanged(e.PropertyName);
     }
 

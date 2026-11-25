@@ -461,6 +461,27 @@
                                                 <TextBlock Grid.Column="4" Text="{Binding Volume, StringFormat={}{0}%}" FontSize="12"
                                                            Foreground="{DynamicResource SubtleText}" TextAlignment="Right" VerticalAlignment="Center" />
                                             </Grid>
+
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="64" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Style="{StaticResource ControlIcon}" Text="&#xE916;"
+                                                           ToolTip="Delay of every speaker in the group: shift them all earlier or later" />
+                                                <RepeatButton Grid.Column="1" Content="&#xE949;" Style="{StaticResource StepButton}"
+                                                              Command="Slider.DecreaseSmall" CommandTarget="{Binding ElementName=GroupDelaySlider}" />
+                                                <Slider x:Name="GroupDelaySlider" Grid.Column="2" Minimum="-2000" Maximum="2000"
+                                                        SmallChange="100" TickFrequency="10" IsSnapToTickEnabled="True"
+                                                        Value="{Binding OffsetMs, Delay=400}" />
+                                                <RepeatButton Grid.Column="3" Content="&#xE948;" Style="{StaticResource StepButton}"
+                                                              Command="Slider.IncreaseSmall" CommandTarget="{Binding ElementName=GroupDelaySlider}" />
+                                                <TextBlock Grid.Column="4" Text="{Binding OffsetMs, StringFormat={}{0} ms}" FontSize="12"
+                                                           Foreground="{DynamicResource SubtleText}" TextAlignment="Right" VerticalAlignment="Center" />
+                                            </Grid>
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
