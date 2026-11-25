@@ -143,7 +143,7 @@ public partial class App : System.Windows.Application
             await Task.WhenAll(speakers.Where(s => remembered.Contains(s.Id)).Select(s =>
             {
                 var setting = WindowsSettings.SpeakerSettingFor(s.Id);
-                return _engine.PlayAsync(s.Id, setting.Volume, setting.OffsetMs);
+                return _engine.PlayAsync(s.Id, setting.Volume, setting.OffsetMs, keepSpeakerVolume: true);
             }));
         }
         finally

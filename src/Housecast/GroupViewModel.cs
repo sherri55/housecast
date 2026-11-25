@@ -50,6 +50,11 @@ public sealed class GroupViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// True once every speaker in the group plays and has said what its volume is.
+    /// </summary>
+    public bool HasVolume => _members.Count > 0 && _members.All(m => m.HasVolume);
+
     public int Volume
     {
         get => _members.Count == 0 ? 0 : (int)Math.Round(_members.Average(m => m.Volume));
@@ -75,6 +80,7 @@ public sealed class GroupViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(Members));
         OnPropertyChanged(nameof(IsSelected));
         OnPropertyChanged(nameof(Volume));
+        OnPropertyChanged(nameof(HasVolume));
     }
 
     private async Task ApplySelectionAsync(bool selected)
@@ -93,7 +99,7 @@ public sealed class GroupViewModel : INotifyPropertyChanged
 
     private void OnMemberChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(DeviceViewModel.IsSelected) or nameof(DeviceViewModel.Volume))
+        if (e.PropertyName is nameof(DeviceViewModel.IsSelected) or nameof(DeviceViewModel.Volume) or nameof(DeviceViewModel.HasVolume))
             OnPropertyChanged(e.PropertyName);
     }
 

@@ -443,7 +443,7 @@
                                                 </ItemsControl>
                                             </Grid>
 
-                                            <Grid>
+                                            <Grid Visibility="{Binding HasVolume, Converter={StaticResource Visible}}">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
@@ -493,19 +493,20 @@
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="64" />
                                             </Grid.ColumnDefinitions>
+                                            <!-- The volume row shows once the speaker plays and has said what its volume is -->
                                             <Grid.RowDefinitions>
-                                                <RowDefinition />
-                                                <RowDefinition />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
-                                            <TextBlock Style="{StaticResource ControlIcon}" Text="&#xE995;" ToolTip="Volume" />
-                                            <RepeatButton Grid.Column="1" Content="&#xE949;" Style="{StaticResource StepButton}"
+                                            <TextBlock Style="{StaticResource ControlIcon}" Text="&#xE995;" ToolTip="Volume" Visibility="{Binding HasVolume, Converter={StaticResource Visible}}" />
+                                            <RepeatButton Grid.Column="1" Content="&#xE949;" Style="{StaticResource StepButton}" Visibility="{Binding HasVolume, Converter={StaticResource Visible}}"
                                                           Command="Slider.DecreaseSmall" CommandTarget="{Binding ElementName=VolumeSlider}" />
-                                            <Slider x:Name="VolumeSlider" Grid.Column="2" Minimum="0" Maximum="100" SmallChange="1"
+                                            <Slider x:Name="VolumeSlider" Grid.Column="2" Minimum="0" Maximum="100" SmallChange="1" Visibility="{Binding HasVolume, Converter={StaticResource Visible}}"
                                                     Value="{Binding Volume, Delay=250}" />
-                                            <RepeatButton Grid.Column="3" Content="&#xE948;" Style="{StaticResource StepButton}"
+                                            <RepeatButton Grid.Column="3" Content="&#xE948;" Style="{StaticResource StepButton}" Visibility="{Binding HasVolume, Converter={StaticResource Visible}}"
                                                           Command="Slider.IncreaseSmall" CommandTarget="{Binding ElementName=VolumeSlider}" />
-                                            <TextBlock Grid.Column="4" Text="{Binding Volume, StringFormat={}{0}%}" FontSize="12"
+                                            <TextBlock Grid.Column="4" Text="{Binding Volume, StringFormat={}{0}%}" FontSize="12" Visibility="{Binding HasVolume, Converter={StaticResource Visible}}"
                                                        Foreground="{DynamicResource SubtleText}" TextAlignment="Right" VerticalAlignment="Center" />
 
                                             <TextBlock Grid.Row="1" Style="{StaticResource ControlIcon}" Text="&#xE916;"

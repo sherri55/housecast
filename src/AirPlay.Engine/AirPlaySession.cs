@@ -48,6 +48,12 @@ public sealed class AirPlaySession : IAsyncDisposable
     public IPEndPoint ControlEndPoint { get; private set; } = new(IPAddress.None, 0);
 
     /// <summary>
+    /// 0–100: the volume the speaker was at, when it was started with no volume of its own and
+    /// said what its volume is.
+    /// </summary>
+    public int? SpeakerVolumePercent { get; private set; }
+
+    /// <summary>
     /// Raised once if the speaker drops the session: it stopped answering, or another sender
     /// took it over. The session is no use afterwards and should be disposed.
     /// </summary>
@@ -62,10 +68,11 @@ public sealed class AirPlaySession : IAsyncDisposable
     /// <param name="ptpClockId">The clock this sender serves, which the speaker should follow.</param>
     /// <param name="addPtpPeer">Called with the speaker's timing address once it gives it.</param>
     /// <param name="localControlPort">Our UDP port for sync packets and resend requests.</param>
+    /// <param name="volumePercent">0–100, or null to leave the speaker at its own volume.</param>
     /// <param name="pairing">Keys from an earlier PIN pairing, or null for transient pairing.</param>
     /// <param name="pairingId">The identifier those keys were made with.</param>
     /// <exception cref="PairingException">The speaker refused to pair, e.g. because it wants a PIN.</exception>
-    public async Task StartAsync(ulong ptpClockId, Action<IPAddress> addPtpPeer, int localControlPort, int volumePercent,
+    public async Task StartAsync(ulong ptpClockId, Action<IPAddress> addPtpPeer, int localControlPort, int? volumePercent,
         PairingKeys? pairing, string pairingId, CancellationToken cancellationToken = default)
     {
         await _rtsp.ConnectAsync(_speaker.Address, _speaker.Port, cancellationToken);
@@ -151,9 +158,13 @@ public sealed class AirPlaySession : IAsyncDisposable
 
         // OwnTone sends volume last: some speakers ignore it if it comes earlier. Samsung TVs
         // refuse it with 500 and play anyway, so, as in OwnTone, a refusal doesn't end the session.
+        // Speakers only say their volume once the stream is set up, so it's read here too.
         try
         {
-            await SetVolumeAsync(volumePercent, cancellationToken);
+            if (volumePercent is null)
+                SpeakerVolumePercent = await GetVolumeAsync(cancellationToken);
+            else
+                await SetVolumeAsync(volumePercent.Value, cancellationToken);
         }
         catch (AirPlayException)
         {
@@ -171,6 +182,17 @@ public sealed class AirPlaySession : IAsyncDisposable
         var decibels = -30.0 + 0.3 * Math.Clamp(percent, 0, 100);
         var body = System.Text.Encoding.ASCII.GetBytes(string.Create(CultureInfo.InvariantCulture, $"volume: {decibels:0.000000}\r\n"));
         await SendOrThrowAsync("SET_PARAMETER", SessionUrl, body, "text/parameters", cancellationToken);
+    }
+
+    // The reply is "volume: <dB>", on the same scale SetVolumeAsync sends; −144 means muted
+    private async Task<int?> GetVolumeAsync(CancellationToken cancellationToken)
+    {
+        var reply = await SendOrThrowAsync("GET_PARAMETER", SessionUrl, "volume\r\n"u8.ToArray(), "text/parameters", cancellationToken);
+        var text = System.Text.Encoding.ASCII.GetString(reply.Body);
+        var value = text[(text.IndexOf(':') + 1)..].Trim();
+        if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var decibels))
+            return null;
+        return (int)Math.Round(Math.Clamp((decibels + 30.0) / 0.3, 0, 100));
     }
 
     private async Task KeepAliveAsync()

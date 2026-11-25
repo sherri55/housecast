@@ -208,7 +208,11 @@ public sealed class AirPlayEngine : IAsyncDisposable
 
     /// <param name="volume">0–100, before <see cref="MasterVolume"/> scales it.</param>
     /// <param name="offsetMilliseconds">Plays this speaker later (positive) or earlier (negative) than the rest.</param>
-    public async Task<PlayResult> PlayAsync(string speakerId, int volume, int offsetMilliseconds)
+    /// <param name="keepSpeakerVolume">
+    /// Leaves the speaker at its own volume, which <see cref="VolumeOf"/> then gives. A speaker
+    /// that won't say what its volume is gets <paramref name="volume"/> instead.
+    /// </param>
+    public async Task<PlayResult> PlayAsync(string speakerId, int volume, int offsetMilliseconds, bool keepSpeakerVolume = false)
     {
         AirPlaySpeaker? speaker;
         lock (_lock)
@@ -231,7 +235,15 @@ public sealed class AirPlayEngine : IAsyncDisposable
         {
             using var timeout = new CancellationTokenSource(ConnectTimeout);
             // Pairing is seconds of big-number maths at worst; keep it off the caller's (UI) thread
-            var session = await Task.Run(() => _streamer.AddSpeakerAsync(speaker, Scaled(volume), offsetMilliseconds, pairing, _keyStore.ClientId, timeout.Token));
+            var session = await Task.Run(() => _streamer.AddSpeakerAsync(speaker, keepSpeakerVolume ? null : Scaled(volume),
+                offsetMilliseconds, pairing, _keyStore.ClientId, timeout.Token));
+            if (keepSpeakerVolume)
+            {
+                if (session.SpeakerVolumePercent is { } current)
+                    volume = Unscaled(current);
+                else
+                    await SendVolumeAsync(session, Scaled(volume));
+            }
             session.Lost += OnLost;
             lock (_lock)
                 _playing[speakerId] = new Playing(session, volume, offsetMilliseconds);
@@ -269,6 +281,13 @@ public sealed class AirPlayEngine : IAsyncDisposable
         }
         if (playing is not null)
             await _streamer.RemoveSpeakerAsync(playing.Session);
+    }
+
+    /// <summary>0–100, before <see cref="MasterVolume"/> scales it; null unless the speaker plays this PC's sound.</summary>
+    public int? VolumeOf(string speakerId)
+    {
+        lock (_lock)
+            return _playing.TryGetValue(speakerId, out var playing) ? playing.Volume : null;
     }
 
     /// <param name="volume">0–100, before <see cref="MasterVolume"/> scales it.</param>
@@ -523,6 +542,10 @@ public sealed class AirPlayEngine : IAsyncDisposable
     }
 
     private int Scaled(int volume) => volume * _masterVolume / 100;
+
+    // A speaker louder than the master volume allows shows at 100
+    private int Unscaled(int percent) =>
+        _masterVolume == 0 ? percent : Math.Min(100, (int)Math.Round(percent * 100.0 / _masterVolume));
 
     private async Task SendVolumeAsync(AirPlaySession session, int percent)
     {

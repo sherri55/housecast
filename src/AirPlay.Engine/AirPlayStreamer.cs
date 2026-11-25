@@ -67,10 +67,11 @@ public sealed class AirPlayStreamer : IAsyncDisposable
         public uint SamplesSinceSync { get; set; }
     }
 
+    /// <param name="volumePercent">0–100, or null to leave the speaker at its own volume.</param>
     /// <param name="offsetMilliseconds">Plays this speaker later (positive) or earlier (negative) than the rest.</param>
     /// <param name="pairing">Keys from an earlier PIN pairing, or null for transient pairing.</param>
     /// <param name="pairingId">The identifier those keys were made with.</param>
-    public async Task<AirPlaySession> AddSpeakerAsync(AirPlaySpeaker speaker, int volumePercent, int offsetMilliseconds = 0,
+    public async Task<AirPlaySession> AddSpeakerAsync(AirPlaySpeaker speaker, int? volumePercent, int offsetMilliseconds = 0,
         PairingKeys? pairing = null, string pairingId = "", CancellationToken cancellationToken = default)
     {
         var session = new AirPlaySession(speaker, _clientId, _clientName);

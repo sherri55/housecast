@@ -12,6 +12,7 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
     private bool _isSelected;
     private int _volume;
     private int _offsetMs;
+    private bool _hasVolume;
     private bool _needsPin;
     private bool _isBusy;
 
@@ -25,6 +26,7 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
         _volume = setting.Volume;
         _offsetMs = setting.OffsetMs;
         _isSelected = engine.IsPlaying(Id);
+        TakeEngineVolume();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -75,6 +77,13 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>True while the speaker plays and its volume is known.</summary>
+    public bool HasVolume
+    {
+        get => _hasVolume;
+        private set => Set(ref _hasVolume, value);
+    }
+
     public bool NeedsPin
     {
         get => _needsPin;
@@ -92,8 +101,19 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
     /// </summary>
     public void Update()
     {
-        if (!IsBusy)
-            Set(ref _isSelected, _engine.IsPlaying(Id), nameof(IsSelected));
+        if (IsBusy)
+            return;
+        Set(ref _isSelected, _engine.IsPlaying(Id), nameof(IsSelected));
+        TakeEngineVolume();
+    }
+
+    // The speaker's own volume, once it plays and has said what it is; until then the slider is hidden
+    private void TakeEngineVolume()
+    {
+        var volume = _engine.VolumeOf(Id);
+        HasVolume = volume is not null;
+        if (volume is { } known && Set(ref _volume, known, nameof(Volume)))
+            SaveSetting();
     }
 
     /// <summary>
@@ -112,9 +132,10 @@ public sealed class DeviceViewModel : INotifyPropertyChanged
             }
 
             // A device that has never been paired shows a PIN instead of playing
-            var result = await _engine.PlayAsync(Id, Volume, OffsetMs);
+            var result = await _engine.PlayAsync(Id, Volume, OffsetMs, keepSpeakerVolume: true);
             NeedsPin = result == PlayResult.NeedsPin;
             Set(ref _isSelected, result == PlayResult.Playing, nameof(IsSelected));
+            TakeEngineVolume();
         }
         finally
         {
